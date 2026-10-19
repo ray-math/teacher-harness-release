@@ -1,0 +1,12 @@
+[
+  {
+    "asset": "assets/internal.odt",
+    "assetSha256": "69a822f55786c169fca3aee5da396ad7397f56484055db0985e211a7acb69f7c",
+    "validation": "ZIP entry/XML text and attributes inspected: template fields only; no institution, person, contacts, personal paths, creator metadata, external links or images; rendering not checked"
+  },
+  {
+    "asset": "assets/general.odt",
+    "assetSha256": "ca4414a3d9005f94ee820cbf25fbee5e0290ac747dd4d3be3adc83637a3749e2",
+    "validation": "ZIP entry/XML text and attributes inspected: template fields only; no institution, person, contacts, personal paths, creator metadata, external links or images; rendering not checked"
+  }
+]

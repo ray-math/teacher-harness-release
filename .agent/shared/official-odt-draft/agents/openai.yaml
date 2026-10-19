@@ -1,0 +1,6 @@
+interface:
+  display_name: "기존 공문 양식 채우기"
+  short_description: "사용자 지정 기존 초안/양식을 읽고 구조를 보존하며 공문 내용을 채움"
+  default_prompt: "$official-odt-draft 지정한 기존 초안/양식을 먼저 실제 읽고 구조를 보존하며 내용을 채워줘. 기존 파일이 지정되지 않았으면 멈춰 질문하고, 다른 원본 형식을 ODT로 자동 변환하지 마."
+policy:
+  allow_implicit_invocation: true

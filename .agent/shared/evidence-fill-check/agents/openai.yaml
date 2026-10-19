@@ -1,0 +1,6 @@
+interface:
+  display_name: "자료 근거 기반 채움·대조"
+  short_description: "비정형·과목별 자료의 근거를 찾아 양식에 반영하고 대조"
+  default_prompt: "$evidence-fill-check로 제공 자료에서 필요한 값을 찾아 대상 양식을 채우거나 기존 값과 대조해줘."
+policy:
+  allow_implicit_invocation: true

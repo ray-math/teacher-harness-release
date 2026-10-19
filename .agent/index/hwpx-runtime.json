@@ -1,0 +1,7 @@
+{
+  "schemaVersion": 1,
+  "runtimeDirectory": ".agent/cache/hwpx-runtime-2.1.0",
+  "versions": {"python-hwpx": "6.3.0", "python-hwpx-automation": "7.0.4"},
+  "skillVersion": "2.1.0",
+  "autoUpdate": false
+}

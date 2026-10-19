@@ -1,0 +1,12 @@
+.agent/cache/
+**/.deps/
+**/__pycache__/
+*.pyc
+.agent/shared/bin/
+.agent/shared/hancom-native/*.dll
+.agent/shared/hancom-native/desktop-install.json
+outputs/
+**/.ai/
+.agent/index/odt-runtime.json
+.agent/index/install-status.json
+.agent/private/
