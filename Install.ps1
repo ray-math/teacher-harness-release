@@ -20,6 +20,8 @@ $workspace = [IO.Path]::GetFullPath($PSScriptRoot)
 $setup = Join-Path $workspace 'Setup.ps1'
 $shared = Join-Path $workspace '.agent/shared'
 $steps = [Collections.Generic.List[object]]::new()
+$mcpRegistrationVerified = $false
+$mcpTransportVerified = $false
 $pathOptions = @{}
 foreach ($name in @('CabinetRoot','IncomingRoot')) {
     if ($PSBoundParameters.ContainsKey($name)) {
@@ -127,21 +129,26 @@ else {
         }
         if (-not $CodexExecutable -or -not (Test-Path -LiteralPath $CodexExecutable -PathType Leaf)) { throw 'Codex CLI was not found. Local document runtimes are available; MCP registration remains pending.' }
         if (-not $CodexHomePath) { $CodexHomePath=if ($env:CODEX_HOME) { $env:CODEX_HOME } else { Join-Path $env:USERPROFILE '.codex' } }
-        if (-not (Test-Path -LiteralPath (Join-Path $CodexHomePath 'config.toml') -PathType Leaf)) { throw 'Existing Codex config was not found; no personal settings were created or replaced.' }
-        # Read the selected settings without changing global environment or a different profile.
+        # The first MCP registration may create config.toml through the Codex CLI.
+        # The connection installer preserves unrelated settings and rejects name conflicts.
         $runtime = & (Join-Path $shared 'Get-HwpxRuntime.ps1')
-        $expectedLauncher = Join-Path $shared 'hwpx_mcp_launch.py'
-        $inspectionLines = @(& $runtime.Server -B (Join-Path $shared 'inspect_harness_connection.py') (Join-Path $CodexHomePath 'config.toml') $runtime.Server $expectedLauncher $runtime.Spec.skillVersion)
-        if ($LASTEXITCODE -ne 0) { throw 'Existing Codex settings could not be parsed; no MCP registration was changed.' }
-        $inspection = ($inspectionLines -join [Environment]::NewLine) | ConvertFrom-Json
-        if ($inspection.exists) {
-            if (-not $inspection.matchesProject) {
-                throw 'An existing hwpx MCP connection belongs to another launcher. It was preserved. Ask which connection to use before changing this registration.'
-            }
-            Add-InstallStep 'mcp' 'reused' 'Existing project launcher registration reused. Tool exposure/health must still be checked in a new Codex chat.'
+        $connection = & (Join-Path $shared 'Install-HwpxNativeConnection.ps1') -CodexExecutable $CodexExecutable -CodexHomePath $CodexHomePath
+        $mcpRegistrationVerified = [bool]$connection.registrationVerified
+        Add-InstallStep 'mcp' $connection.registrationStatus 'Project launcher registration read back and verified; current chat tool exposure remains unverified.'
+        if ($connection.backupPath) { Add-InstallStep 'mcp-backup' 'preserved' ('Original Codex settings: ' + $connection.backupPath) }
+        # Windows PowerShell 5.1 can turn harmless native stderr warnings into
+        # terminating errors. The verifier's exit code is the success contract.
+        $savedErrorAction = $ErrorActionPreference
+        try {
+            $ErrorActionPreference = 'Continue'
+            & $runtime.Server -B (Join-Path $shared 'check_hwpx_mcp.py') --config (Join-Path $CodexHomePath 'config.toml') --timeout 60 | Out-Null
+            $mcpCheckExitCode = $LASTEXITCODE
+        } finally { $ErrorActionPreference = $savedErrorAction }
+        if ($mcpCheckExitCode -ne 0) {
+            Add-InstallStep 'mcp-transport' 'failed' 'Registration is present but stdio startup, required-tools or health check failed.'
         } else {
-            & $setup @pathOptions -RegisterMcp -CodexExecutable $CodexExecutable -CodexHomePath $CodexHomePath | Out-Null
-            Add-InstallStep 'mcp' 'registered' 'Project launcher registered; tool exposure/health must still be checked in a new Codex chat.'
+            $mcpTransportVerified = $true
+            Add-InstallStep 'mcp-transport' 'verified' 'Registered stdio command initialized, exposed required tools and passed health; verify tool exposure in a new Codex chat.'
         }
     } catch { Add-InstallStep 'mcp' 'attention' $_.Exception.Message }
 }
@@ -153,6 +160,7 @@ $summary=[pscustomobject]@{
     schemaVersion='teacher-harness-install/v1';workspace=$workspace;checkOnly=$false
     status=$(if ($attention.Count) {'attention'} else {'ready-for-tool-check'})
     hwpxRuntimeVerified=[bool]$hwpxReady;odtRuntimeVerified=[bool]$odtReady
+    mcpRegistrationVerified=[bool]$mcpRegistrationVerified;mcpTransportVerified=[bool]$mcpTransportVerified
     projectSkillsIncluded=[bool](Test-Path -LiteralPath (Join-Path $workspace '.agents/skills') -PathType Container)
     skillsCopiedToPersonalDirectory=$false
     nativeHancomVerified=$false;currentChatMcpVerified=$false

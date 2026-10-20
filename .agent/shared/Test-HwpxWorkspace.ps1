@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param([switch]$StructureOnly)
 $ErrorActionPreference = 'Stop'
 $workspace = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
@@ -6,6 +6,9 @@ $errors = [Collections.Generic.List[string]]::new()
 $warnings = [Collections.Generic.List[string]]::new()
 $required = @(
     '.agent\shared\inspect_harness_connection.py',
+    '.agent\shared\check_hwpx_mcp.py',
+    '.agent\shared\test_hwpx_mcp_install.py',
+    '.agent\shared\benchmark_hwpx_transport.py',
     'AGENTS.md', 'README.md', 'INSTALL.md', 'Install.ps1', 'Setup.ps1',
     '.agent\shared\DocumentBasis.ps1',
     '.agent\shared\Receive-TeacherHarnessInputs.ps1',

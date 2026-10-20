@@ -19,7 +19,7 @@
 | 파일 열기 실행기·응답 | `Test-NativeOpenAcknowledgement.ps1` | 경로 허용 검증도 바꾸면 `Test-HumanWorkOpenNativeSafety.ps1` |
 | 설치된 실행 코드만 갱신 | `Test-PortableRuntimeOnly.ps1` | 실제 배포에서는 설치본 해시와 업무문서·설정 보존 확인 |
 | 보관함 최초 설치·이동 | `Test-PortableCabinet.ps1` | 접수 연계도 바꾸면 `Test-CabinetLifecycle.ps1` |
-| HWPX 실행기·버전·MCP 연결 | `Start-HwpxMcpWindows.ps1 -CheckOnly`, `test_hwpx_dynamic_launch.py` | 앱 설정 변경 시 `--installed-config <config.toml>`로 등록한 명령의 연결도 검사. 편집 런타임 변경은 TEMP 합성 편집·재열기 추가; 새 세션 도구 노출은 별도 확인 |
+| HWPX 실행기·버전·MCP 연결 | `Start-HwpxMcpWindows.ps1 -CheckOnly`, `test_hwpx_dynamic_launch.py` | 설치·등록 코드 변경 시 `test_hwpx_mcp_install.py --powershell <실행기> --codex <CLI>`로 TEMP 설정에서 최초 등록·재사용·충돌 보존·서버 기동 실패를 검사. 앱 설정 변경 시 `--installed-config <config.toml>`로 등록한 명령의 연결도 검사. 편집 런타임 변경은 TEMP 합성 편집·재열기 추가; 새 세션 도구 노출은 별도 확인 |
 | 선택적 입력 루트 누락·업무 이동 재접수 | `test_workflow_path_resume.py` | TEMP 합성 보관함에서 MCP 읽기·루트 경계·같은 cycle 재접수·완료 재검증·게시 재사용 확인 |
 | ODT 의존성·생성 실행기 | 개인 `official-odt-draft/scripts/run_odt.py --self-test` | 스킬 전용 고정 의존성 사용, 신규 세 양식 생성·재열기·덮어쓰기 거부 |
 | XLSX 미리보기 실행기 | `test_xlsx_preview_runtime.py --node <번들 Node> --node-modules <번들 패키지>` | TEMP 합성 파일 작성·수정·계산·별도 Excel 렌더·정상 종료·원본 보존; COM이 가능한 권한 실행 경로 사용 |

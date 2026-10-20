@@ -16,7 +16,7 @@ Codex는 이 안내를 읽고 다음 순서로 진행합니다.
 
 1. `Install.ps1 -CheckOnly`로 현재 경로·런타임 파일·설치 도구·Codex CLI 사용 가능 여부를 읽기 전용으로 확인합니다.
 2. 기존 설정을 재사용해 `Install.ps1`을 실행합니다. 업무·받은자료 경로를 적용하고, 필요한 `uv`와 HWPX·ODT 실행 환경을 설치·검사합니다.
-3. Codex CLI를 찾을 수 있으면 기존 Codex 설정에 HWPX MCP 연결을 등록하고 읽어 확인합니다. 동명의 동일 연결은 재사용하고 다른 연결은 덮어쓰지 않습니다.
+3. Codex CLI를 찾을 수 있으면 HWPX MCP 연결을 기본으로 등록합니다. 기존 Codex 설정을 보존하고, 설정 파일이 아직 없으면 Codex CLI로 만듭니다. 동명의 동일 연결은 재사용하고 다른 연결은 덮어쓰지 않습니다. 등록된 명령을 실제로 실행해 MCP 초기화·필수 도구·상태 응답도 확인합니다.
 4. 완료한 단계와 실패·미검증 항목, 사람이 처리해야 할 단계를 채팅으로 보고합니다. MCP 등록 뒤에는 새 Codex 채팅에서 실제 도구 노출·호출을 확인합니다.
 
 설치 요청 자체가 위 설정·다운로드·연결·검사 작업의 요청입니다. 같은 설정이나 실행 단계를 다시 승인받기 위한 질문은 하지 않습니다. 일반 문서 작성 요청에서는 공통 런타임을 자동 설치·갱신하지 않습니다.
@@ -56,7 +56,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\Install.ps1 -SkipMcp
 
 `Install.ps1`은 이 컴퓨터의 프로젝트 실행 환경을 준비합니다. HWPX의 고정 의존성은 `.agent/shared/hwpx-runtime/requirements-verified.txt`, 설치 위치·버전 설정은 `.agent/index/hwpx-runtime.json`에서 관리합니다. ODT 의존성은 프로젝트의 `official-odt-draft/.deps`에 설치하고 Python·의존성 경로를 `.agent/index/odt-runtime.json`에 기록합니다. 설치된 가상환경을 다른 컴퓨터에 그대로 복사하지 않습니다.
 
-Codex CLI가 없으면 준비할 수 있는 경로·런타임 작업을 마친 뒤 MCP 등록이 미검증임을 보고합니다. 같은 이름의 `hwpx` 연결이 다른 명령·인수·환경을 사용하면 기존 연결을 보존하고 그 등록만 중단해 충돌 내용을 보고합니다. 사용자의 다른 Codex 연결·설정과 전역 스킬은 바꾸지 않습니다. MCP 설정의 등록·읽기 확인과 현재 채팅의 실제 도구 호출은 별도 확인입니다.
+Codex CLI가 없으면 준비할 수 있는 경로·런타임 작업을 마친 뒤 MCP 등록이 미검증임을 보고합니다. 같은 이름의 `hwpx` 연결이 다른 명령·인수·환경을 사용하거나 비활성화·필수 도구 제한 상태이면 기존 연결을 보존하고 그 등록만 중단해 충돌 내용을 보고합니다. 다른 Codex 연결·설정과 전역 스킬은 보존합니다. 기존 설정에 연결을 추가할 때 원본을 TEMP에 백업하고 위치를 설치 결과에 기록합니다. MCP 등록 확인(`mcpRegistrationVerified`), 등록된 서버의 실제 기동·상태 확인(`mcpTransportVerified`), 현재 채팅의 도구 노출 확인은 별도 결과입니다. 서버가 시작되지 않으면 등록만 성공했더라도 설치 결과를 주의 필요로 보고합니다.
+
+`python-hwpx`는 문서 읽기·수정·저장의 엔진이고, `python-hwpx-automation`은 그 엔진을 사용하는 자동화·CLI·MCP 계층입니다. MCP를 사용해도 서버 내부에서 두 패키지가 필요합니다. 자동화 패키지 7.0.4는 `python-hwpx>=6.3.0,<7`을 요구하며, 이 배포본은 재현성을 위해 엔진도 6.3.0으로 고정합니다. 두 줄은 동일 라이브러리의 중복 설치가 아닙니다.
 
 Codex 설치·로그인, 한컴오피스 설치·라이선스, 네트워크 또는 시스템 권한은 사람이 처리해야 할 수 있습니다. `winget`·네트워크를 사용할 수 없거나 권한이 막히면 실패한 단계와 필요한 조치를 보고하며 설치 완료로 표현하지 않습니다. `uv`의 수동 설치가 필요하면 [Astral 공식 설치 안내](https://docs.astral.sh/uv/getting-started/installation/)를 사용합니다.
 
@@ -94,6 +96,17 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .agent/shared/Start-HwpxMcpW
 첫 명령은 구조 확인, 둘째는 설정된 HWPX 실행 환경 확인입니다. 설치 과정에서 이미 실행한 검사는 그 결과를 사용합니다. 실제 학교자료 대신 합성 문서로 읽기·편집·저장·재열기를 확인한 후 사용합니다. 한컴 네이티브 처리와 페이지 렌더는 그 기능을 사용할 컴퓨터에서 별도로 검증합니다.
 
 설정·패키지 설치·구조 검사·MCP 등록·현재 채팅의 도구 호출·한글 자동화·페이지 렌더의 결과를 각각 보고합니다. 확인하지 못한 기능은 미검증으로 남깁니다. MCP가 노출되지 않으면 [로컬 HWPX 실행 안내](.agent/shared/hwpx-runtime/SKILL.md)의 지원 경로와 제한을 확인합니다. 오류가 나면 해당 기능과 의존성만 진단하고 무관한 프로그램 설치로 확대하지 않습니다.
+
+### 연결 재사용 성능 비교
+
+실제 학교자료 없이 같은 합성 문서의 본문·표를 읽어 비교합니다. 고정 HWPX 런타임의 Python으로 아래 도구를 실행합니다.
+
+```powershell
+$runtime = & .agent/shared/Get-HwpxRuntime.ps1
+& $runtime.Python -B .agent/shared/benchmark_hwpx_transport.py --output "$env:TEMP/hwpx-benchmark-new.json" --sequence-only --sequence-batches 6 --sequence-repetitions 3 --timeout 420
+```
+
+기존 출력 파일은 덮어쓰지 않으므로 새 결과 경로를 지정합니다. 합성 문서는 TEMP에 만들고 검사 뒤 제거합니다. 현재 로컬 읽기 실행기도 같은 MCP 서버를 쓰며 배치마다 연결을 새로 엽니다. 이 검사는 배치별 새 연결과 한 연결 재사용을 비교하고 기동·초기화·종료 시간, 결과 내용 동등성과 원본 보존을 함께 확인합니다. `--sequence-only`를 빼면 매 호출·매 배치·이미 열린 연결의 워밍업 후 지연도 함께 측정합니다. 결과는 연결 재사용 효과이며 모델 응답·토큰 사용량·한컴 렌더링·문서 편집 품질의 개선율로 해석하지 않습니다.
 
 ## 제공자료 보관과 개인 설정
 
