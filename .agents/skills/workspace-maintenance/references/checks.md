@@ -6,6 +6,8 @@
 
 | 변경 대상 | 기본 검사 | 추가 검사 조건 |
 |---|---|---|
+| 일반 초안 통합 게시 래퍼 | `Test-DocumentDraftPublish.ps1` | 기존 게시 게이트는 유지하며 필수 확인·PlanOnly·번호 충돌·사람 수정·엄격검증 차단을 TEMP에서 확인 |
+| 한 번에 읽는 HWPX 편집 좌표 | `test_inspect_hwpx_draft.py` | 설치 런타임 Python으로 중첩·병합 셀의 실제 편집 좌표, 기존 문단 preflight 일치, 잘림 표시·원본 해시 보존 확인 |
 | 접수·업무별 등록·게시 흐름 | `Test-FixedCore.ps1`, `Test-HumanDeliveryFlow.ps1` | 현재 파일 보존/롤백 변경이면 `Test-WorkStorage.ps1` |
 | 강의용 Output 직접 저장·자동 번호·원본 참조 | `Test-FlatOutput.ps1`, `Test-TeacherHarnessInputs.ps1` | 공통 저장 경로 변경이면 `Test-FixedCore.ps1`, `Test-HumanDeliveryFlow.ps1`, `Test-WorkStorage.ps1`; TEMP에서 서로 다른 업무·동명 충돌·후속 수정·받은자료 미생성 확인 |
 | 저장본 내용 계약·근거값 대조·필수 내용검사 연결 | `test_content_contract.py`, `Test-ContentValidation.ps1` | 접수·완료·게시 연결 변경이면 `Test-FixedCore.ps1`, `Test-HumanDeliveryFlow.ps1`; 기존 Python으로 TEMP 합성 HWPX/ODT/XLSX만 사용 |
