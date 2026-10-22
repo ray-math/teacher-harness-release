@@ -65,15 +65,15 @@ def integration(powershell, codex):
         shared.mkdir(parents=True)
         index.mkdir(parents=True)
         (harness / ".agents/skills").mkdir(parents=True)
-        for name in ("Install-HwpxNativeConnection.ps1", "inspect_harness_connection.py", "check_hwpx_mcp.py"):
+        for name in ("Install-HwpxNativeConnection.ps1", "inspect_harness_connection.py", "check_hwpx_mcp.py", "check_hwpx_document.py"):
             shutil.copyfile(SHARED / name, shared / name)
         shutil.copyfile(ROOT / "Install.ps1", harness / "Install.ps1")
         # Replace platform/path/dependency provisioning only; registration and smoke
         # checks remain the production code and use the real Codex CLI and MCP server.
-        (harness / "Setup.ps1").write_text('param([switch]$CheckOnly)\n[pscustomobject]@{fixture=$true}\n')
+        (shared / "Setup-TeacherHarness.ps1").write_text('param([switch]$CheckOnly)\n[pscustomobject]@{fixture=$true}\n')
         (shared / "Start-HwpxMcpWindows.ps1").write_text('param([switch]$CheckOnly)\n')
         (shared / "Test-HwpxWorkspace.ps1").write_text('param([switch]$StructureOnly)\n')
-        runtime = "[pscustomobject]@{Server=" + ps_literal(sys.executable) + ";Spec=[pscustomobject]@{skillVersion='2.1.0'}}\n"
+        runtime = "[pscustomobject]@{Server=" + ps_literal(sys.executable) + ";Python=" + ps_literal(sys.executable) + ";Spec=[pscustomobject]@{skillVersion='2.1.0'}}\n"
         (shared / "Get-HwpxRuntime.ps1").write_text(runtime)
         odt = shared / "official-odt-draft/scripts"
         odt.mkdir(parents=True)
@@ -88,14 +88,14 @@ def integration(powershell, codex):
         env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
 
         def run_install(*extra):
-            result = subprocess.run([str(powershell), "-NoProfile", "-File", str(harness / "Install.ps1"),
+            result = subprocess.run([str(powershell), "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(harness / "Install.ps1"),
                 "-CodexExecutable", str(codex), "-CodexHomePath", str(home), *extra],
                 capture_output=True, text=True, env=env, timeout=100)
             if result.returncode:
                 raise AssertionError(result.stdout + result.stderr)
             return json.loads((index / "install-status.json").read_text(encoding="utf-8-sig"))
 
-        preflight = subprocess.run([str(powershell), "-NoProfile", "-File", str(harness / "Install.ps1"),
+        preflight = subprocess.run([str(powershell), "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(harness / "Install.ps1"),
             "-CheckOnly", "-CodexExecutable", str(codex), "-CodexHomePath", str(home)],
             capture_output=True, text=True, env=env, timeout=30)
         assert preflight.returncode == 0, preflight.stderr
@@ -104,6 +104,7 @@ def integration(powershell, codex):
         first = run_install()
         assert first["mcpRegistrationVerified"] and first["mcpTransportVerified"], first
         assert not first["currentChatMcpVerified"], first
+        assert first["hwpxDocumentVerified"] and first["localDocumentDraftsReady"], first
         assert next(s for s in first["steps"] if s["name"] == "mcp")["status"] == "registered"
         checks.append("default first install creates missing config and verifies real registered stdio server")
         before = config.read_bytes()
@@ -129,7 +130,7 @@ def integration(powershell, codex):
         assert config.read_bytes() == conflict and not rejected["mcpRegistrationVerified"]
         assert rejected["status"] == "attention"
         # The lower-level registration entry point must enforce the same boundary.
-        direct = subprocess.run([str(powershell), "-NoProfile", "-File", str(shared / "Install-HwpxNativeConnection.ps1"),
+        direct = subprocess.run([str(powershell), "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(shared / "Install-HwpxNativeConnection.ps1"),
             "-CodexExecutable", str(codex), "-CodexHomePath", str(home)], capture_output=True, text=True, env=env, timeout=30)
         assert direct.returncode != 0 and config.read_bytes() == conflict
         checks.append("conflicting connection preserved through both install entry points")
@@ -137,6 +138,15 @@ def integration(powershell, codex):
         assert config.read_bytes() == conflict and not skipped["mcpTransportVerified"]
         assert next(s for s in skipped["steps"] if s["name"] == "mcp")["status"] == "skipped"
         checks.append("explicit SkipMcp leaves all MCP settings untouched")
+        smoke = shared / "check_hwpx_document.py"
+        smoke_source = smoke.read_bytes()
+        smoke.write_text("raise RuntimeError('synthetic document failure')\n")
+        failed_document = run_install("-SkipMcp")
+        assert not failed_document["hwpxDocumentVerified"]
+        assert not failed_document["localDocumentDraftsReady"]
+        assert failed_document["status"] == "attention"
+        smoke.write_bytes(smoke_source)
+        checks.append("document failure prevents draft-ready status")
         config.unlink()
         # A server that cannot start must never be reported verified after registration.
         (shared / "hwpx_mcp_launch.py").write_text("raise RuntimeError('synthetic startup failure')\n")
@@ -153,7 +163,7 @@ def integration(powershell, codex):
         parse_script.write_text("param([string]$Manifest)\n$problems=@(); foreach($p in (Get-Content -Raw -LiteralPath $Manifest | ConvertFrom-Json))"
             "{$t=$null;$e=$null;[Management.Automation.Language.Parser]::ParseFile($p,[ref]$t,[ref]$e)|Out-Null;"
             "$problems+=@($e)};if($problems.Count){throw ($problems|Out-String)}")
-        parsed = subprocess.run([str(powershell), "-NoProfile", "-File", str(parse_script), str(manifest)], capture_output=True, text=True)
+        parsed = subprocess.run([str(powershell), "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(parse_script), str(manifest)], capture_output=True, text=True)
         assert parsed.returncode == 0, parsed.stderr
         checks.append("changed PowerShell files parsed without syntax errors")
     return {"ok": True, "checks": checks, "fixtureRemoved": True,

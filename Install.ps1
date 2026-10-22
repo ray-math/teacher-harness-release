@@ -17,11 +17,13 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $workspace = [IO.Path]::GetFullPath($PSScriptRoot)
-$setup = Join-Path $workspace 'Setup.ps1'
+$setup = Join-Path $workspace '.agent/shared/Setup-TeacherHarness.ps1'
 $shared = Join-Path $workspace '.agent/shared'
 $steps = [Collections.Generic.List[object]]::new()
 $mcpRegistrationVerified = $false
 $mcpTransportVerified = $false
+$hwpxDocumentVerified = $false
+$hwpxDocumentCheck = $null
 $pathOptions = @{}
 foreach ($name in @('CabinetRoot','IncomingRoot')) {
     if ($PSBoundParameters.ContainsKey($name)) {
@@ -82,7 +84,7 @@ if ($CheckOnly) {
 
 # Setup resolves existing selections. It never moves existing school files.
 & $setup @pathOptions | Out-Null
-Add-InstallStep 'work-paths' 'ready' 'Configured work and received-material folders; existing selections reused.'
+Add-InstallStep 'work-paths' 'ready' 'Configured output location and input handling; existing selections reused.'
 $hwpxReady = Test-HwpxReady
 $odtReady = Test-OdtReady
 if (-not $hwpxReady -or -not $odtReady) {
@@ -97,7 +99,7 @@ if (-not $hwpxReady -or -not $odtReady) {
             if (-not $uvPath) { throw 'uv was not located after installation. Refresh the terminal and rerun Install.ps1.' }
             Add-InstallStep 'uv' 'installed' 'Installed official astral-sh.uv package for the current user.'
         } else { Add-InstallStep 'uv' 'reused' 'Existing uv installation reused; no upgrade requested.' }
-        # Make the resolved executable available to the existing Setup.ps1 only in this process.
+        # Make the resolved executable available to internal setup only in this process.
         $savedPath = $env:Path
         try {
             $env:Path = (Split-Path -Parent $uvPath) + [IO.Path]::PathSeparator + $savedPath
@@ -118,6 +120,18 @@ if (-not $hwpxReady -or -not $odtReady) {
 }
 if ($hwpxReady -and -not ($steps | Where-Object name -eq 'hwpx-runtime')) { Add-InstallStep 'hwpx-runtime' 'reused' 'Existing pinned runtime passed its package/capability check.' }
 if ($odtReady -and -not ($steps | Where-Object name -eq 'odt-runtime')) { Add-InstallStep 'odt-runtime' 'reused' 'Existing ODT runtime passed runtime-check.' }
+
+if ($hwpxReady) {
+    try {
+        $runtime = & (Join-Path $shared 'Get-HwpxRuntime.ps1')
+        $checkOutput = & $runtime.Python -X utf8 -B (Join-Path $shared 'check_hwpx_document.py')
+        if ($LASTEXITCODE -ne 0) { throw 'HWPX synthetic document read/fill/save/reopen check failed.' }
+        $hwpxDocumentCheck = ($checkOutput -join "`n") | ConvertFrom-Json
+        if ($hwpxDocumentCheck.ok -ne $true) { throw 'HWPX document check did not confirm success.' }
+        $hwpxDocumentVerified = $true
+        Add-InstallStep 'hwpx-document' 'verified' 'Synthetic document read, cell fill, save and reopen passed; source, table geometry and style definitions preserved. Native Hancom display is not checked.'
+    } catch { Add-InstallStep 'hwpx-document' 'failed' $_.Exception.Message }
+} else { Add-InstallStep 'hwpx-document' 'attention' 'Runtime unavailable; actual document processing is not verified.' }
 
 if ($SkipMcp) { Add-InstallStep 'mcp' 'skipped' 'MCP registration was explicitly skipped.' }
 elseif (-not $hwpxReady) { Add-InstallStep 'mcp' 'attention' 'HWPX runtime is not ready; no MCP settings changed.' }
@@ -158,8 +172,10 @@ catch { Add-InstallStep 'structure' 'failed' $_.Exception.Message }
 $attention=@($steps | Where-Object { $_.status -in @('failed','attention') })
 $summary=[pscustomobject]@{
     schemaVersion='teacher-harness-install/v1';workspace=$workspace;checkOnly=$false
-    status=$(if ($attention.Count) {'attention'} else {'ready-for-tool-check'})
+    status=$(if ($attention.Count) {'attention'} else {'ready-for-document-drafts'})
     hwpxRuntimeVerified=[bool]$hwpxReady;odtRuntimeVerified=[bool]$odtReady
+    hwpxDocumentVerified=[bool]$hwpxDocumentVerified;hwpxDocumentCheck=$hwpxDocumentCheck
+    localDocumentDraftsReady=[bool]($hwpxReady -and $odtReady -and $hwpxDocumentVerified)
     mcpRegistrationVerified=[bool]$mcpRegistrationVerified;mcpTransportVerified=[bool]$mcpTransportVerified
     projectSkillsIncluded=[bool](Test-Path -LiteralPath (Join-Path $workspace '.agents/skills') -PathType Container)
     skillsCopiedToPersonalDirectory=$false

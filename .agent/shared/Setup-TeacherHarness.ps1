@@ -1,6 +1,6 @@
 ﻿<#
 .SYNOPSIS
-Prepare this teacher harness after extracting it to a permanent folder.
+Internal component setup. Use the root Install.ps1 for installation.
 .DESCRIPTION
 The default operation resolves the two user data folders against this script's
 folder, creates them, and saves their absolute paths. -CheckOnly makes no writes.
@@ -19,7 +19,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$workspace = [IO.Path]::GetFullPath($PSScriptRoot)
+$workspace = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
 $shared = Join-Path $workspace '.agent/shared'
 $configPath = Join-Path $workspace '.agent/index/delivery-system.json'
 . (Join-Path $shared 'Resolve-TeacherHarnessConfig.ps1')

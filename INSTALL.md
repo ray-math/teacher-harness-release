@@ -16,8 +16,11 @@ Codex는 이 안내를 읽고 다음 순서로 진행합니다.
 
 1. `Install.ps1 -CheckOnly`로 현재 경로·런타임 파일·설치 도구·Codex CLI 사용 가능 여부를 읽기 전용으로 확인합니다.
 2. 기존 설정을 재사용해 `Install.ps1`을 실행합니다. 설정된 출력 경로를 적용하고, 필요한 `uv`와 HWPX·ODT 실행 환경을 설치·검사합니다.
-3. Codex CLI를 찾을 수 있으면 HWPX MCP 연결을 기본으로 등록합니다. 기존 Codex 설정을 보존하고, 설정 파일이 아직 없으면 Codex CLI로 만듭니다. 동명의 동일 연결은 재사용하고 다른 연결은 덮어쓰지 않습니다. 등록된 명령을 실제로 실행해 MCP 초기화·필수 도구·상태 응답도 확인합니다.
-4. 완료한 단계와 실패·미검증 항목, 사람이 처리해야 할 단계를 채팅으로 보고합니다. MCP 등록 뒤에는 새 Codex 채팅에서 실제 도구 노출·호출을 확인합니다.
+3. 설치한 한글 편집 도구로 임시 예제의 본문과 표를 읽고, 내용을 바꿔 별도 파일로 저장한 뒤 다시 열어 확인합니다. 실제 학교자료는 사용하지 않습니다. 이 확인이 실패하면 문서 작업 준비 완료로 안내하지 않습니다.
+4. Codex CLI를 찾을 수 있으면 HWPX MCP 연결을 기본으로 등록합니다. 기존 Codex 설정을 보존하고, 설정 파일이 아직 없으면 Codex CLI로 만듭니다. 동명의 동일 연결은 재사용하고 다른 연결은 덮어쓰지 않습니다. 등록된 명령을 실제로 실행해 MCP 초기화·필수 도구·상태 응답도 확인합니다.
+5. 완료한 단계와 실패·미검증 항목, 사람이 처리해야 할 단계를 채팅으로 보고합니다. MCP 등록 뒤에는 새 Codex 채팅에서 실제 도구 노출·호출을 확인합니다.
+
+설치 결과의 `localDocumentDraftsReady`는 HWPX 예제 처리와 HWPX·ODT 실행 환경 확인이 모두 통과했음을 뜻합니다. MCP 연결은 별도 항목으로 표시합니다. 기존 연결과 충돌해도 이를 덮어쓰지 않으며, 문서 처리 준비와 연결 주의사항을 나누어 안내합니다. 실제 한컴 화면·쪽 나눔과 README의 모든 업무 사례가 검증됐다는 뜻은 아닙니다.
 
 설치 요청 자체가 위 설정·다운로드·연결·검사 작업의 요청입니다. 같은 설정이나 실행 단계를 다시 승인받기 위한 질문은 하지 않습니다. 일반 문서 작성 요청에서는 공통 런타임을 자동 설치·갱신하지 않습니다.
 
@@ -66,21 +69,11 @@ Codex 설치·로그인, 한컴오피스 설치·라이선스, 네트워크 또�
 
 HWPX 전문 플러그인을 사용할 경우 [HWPX 유지관리자의 안내](https://github.com/airmang/hwpx-plugins)를 확인합니다. 플러그인 지침·로컬 Python 런타임·MCP 연결은 각각의 구성요소이며 하나의 설치 결과로 모두 완료됐다고 보고하지 않습니다.
 
-## 4. 개별 설정·설치가 필요한 경우
+## 4. 설치 시작점은 하나입니다
 
-`Install.ps1`은 전체 설치의 진입점이며 `Setup.ps1`은 필요한 구성요소만 실행하는 도구입니다. 아래 명령은 전체 설치 대신 개별 작업을 요청할 때 사용합니다. `Setup.ps1`의 런타임 옵션은 미리 설치한 `uv`가 필요합니다.
+처음 설치하거나 설치를 다시 확인할 때 모두 루트의 `Install.ps1`을 사용합니다. 일반 사용자는 채팅에서 **“설치해줘”**라고만 요청하면 됩니다.
 
-```powershell
-# 상태만 확인
-powershell -NoProfile -ExecutionPolicy Bypass -File .\Setup.ps1 -CheckOnly
-
-# 현재 설정의 출력 경로 적용
-powershell -NoProfile -ExecutionPolicy Bypass -File .\Setup.ps1
-
-# HWPX 또는 ODT 실행 환경만 설치
-powershell -NoProfile -ExecutionPolicy Bypass -File .\Setup.ps1 -InstallRuntime
-powershell -NoProfile -ExecutionPolicy Bypass -File .\Setup.ps1 -InstallOdt
-```
+구성요소별 설정은 내부 파일 `.agent/shared/Setup-TeacherHarness.ps1`이 담당합니다. `Install.ps1`이 필요한 단계만 호출하므로 사용자가 따로 실행할 필요가 없습니다. 유지보수 시에만 내부 도구의 `-InstallRuntime`, `-InstallOdt`, `-RegisterMcp` 옵션을 사용합니다.
 
 ODT 설치 후에는 [공문 스킬](.agents/skills/official-odt-draft/SKILL.md)의 실행 절차를 사용합니다. 먼저 사용자가 지정한 기존 초안/양식을 열어보고, 등록된 현재본 또는 명시적으로 선택한 이전 문서도 기준본으로 활용합니다. 빈 ODT 양식은 예제 assets이며 사용자가 선택하기 전에는 기본 양식이 아닙니다. 초안과 양식이 모두 없거나 읽을 수 없거나 선택이 모호하면 관련 작성을 멈추고 필요한 자료를 요청합니다. 런타임 설치가 새 양식 작성 허가를 뜻하지 않습니다.
 
@@ -93,7 +86,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .agent/shared/Test-HwpxWorks
 powershell -NoProfile -ExecutionPolicy Bypass -File .agent/shared/Start-HwpxMcpWindows.ps1 -CheckOnly
 ```
 
-첫 명령은 구조 확인, 둘째는 설정된 HWPX 실행 환경 확인입니다. 설치 과정에서 이미 실행한 검사는 그 결과를 사용합니다. 실제 학교자료 대신 합성 문서로 읽기·편집·저장·재열기를 확인한 후 사용합니다. 한컴 네이티브 처리와 페이지 렌더는 그 기능을 사용할 컴퓨터에서 별도로 검증합니다.
+첫 명령은 구조 확인, 둘째는 설정된 HWPX 실행 환경 확인입니다. 설치 과정에서 이미 실행한 검사는 그 결과를 사용합니다. 실제 학교자료 대신 설치 중 수행한 합성 문서 읽기·편집·저장·재열기 결과를 확인합니다. 이 검사는 기본 HWPX 편집 기능을 확인하며 README의 모든 업무나 실제 한컴 화면을 검증한 것은 아닙니다. 한컴 네이티브 처리와 페이지 렌더는 그 기능을 사용할 컴퓨터에서 별도로 검증합니다.
 
 설정·패키지 설치·구조 검사·MCP 등록·현재 채팅의 도구 호출·한글 자동화·페이지 렌더의 결과를 각각 보고합니다. 확인하지 못한 기능은 미검증으로 남깁니다. MCP가 노출되지 않으면 [로컬 HWPX 실행 안내](.agent/shared/hwpx-runtime/SKILL.md)의 지원 경로와 제한을 확인합니다. 오류가 나면 해당 기능과 의존성만 진단하고 무관한 프로그램 설치로 확대하지 않습니다.
 

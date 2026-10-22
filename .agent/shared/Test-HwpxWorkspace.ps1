@@ -7,9 +7,10 @@ $warnings = [Collections.Generic.List[string]]::new()
 $required = @(
     '.agent\shared\inspect_harness_connection.py',
     '.agent\shared\check_hwpx_mcp.py',
+    '.agent\shared\check_hwpx_document.py',
     '.agent\shared\test_hwpx_mcp_install.py',
     '.agent\shared\benchmark_hwpx_transport.py',
-    'AGENTS.md', 'README.md', 'INSTALL.md', 'Install.ps1', 'Setup.ps1',
+    'AGENTS.md', 'README.md', 'INSTALL.md', 'Install.ps1', '.agent\shared\Setup-TeacherHarness.ps1',
     '.agent\shared\DocumentBasis.ps1',
     '.agent\shared\Receive-TeacherHarnessInputs.ps1',
     '.agent\shared\Test-ExistingDocumentBasis.ps1',
@@ -45,7 +46,7 @@ foreach ($relative in $required) {
     if (-not (Test-Path -LiteralPath (Join-Path $workspace $relative) -PathType Leaf)) { $errors.Add("Missing required file: $relative") }
 }
 foreach ($entry in Get-ChildItem -LiteralPath $workspace -Force) {
-    if ($entry.Name -notin @('.agent', '.agents', 'AGENTS.md', 'README.md', 'INSTALL.md', 'Install.ps1', 'Setup.ps1',
+    if ($entry.Name -notin @('.agent', '.agents', 'AGENTS.md', 'README.md', 'INSTALL.md', 'Install.ps1',
     'docs', '.gitignore')) { $warnings.Add("Additional workspace entry: $($entry.Name)") }
 }
 foreach ($relative in @('source', 'manuals', 'templates', '.agent\jobs', '.agent\archive', '.agent\index\human-current.json')) {

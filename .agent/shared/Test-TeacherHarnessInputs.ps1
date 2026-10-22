@@ -92,11 +92,11 @@ try {
     Write-InputFixture -Path (Join-Path $setupWorkspace '.agent/index/delivery-system.json') -Text '{"humanCabinet":"Output","incomingRoot":"Output/.ai/inputs","receiveInputs":false,"outputLayout":"flat"}'
     Write-InputFixture -Path (Join-Path $setupWorkspace '.agent/index/hwpx-runtime.json') -Text '{"runtimeDirectory":"runtime","versions":{}}'
     $null = [IO.Directory]::CreateDirectory((Join-Path $setupWorkspace '.agent/shared'))
-    Copy-Item -LiteralPath (Join-Path $workspaceRoot 'Setup.ps1') -Destination (Join-Path $setupWorkspace 'Setup.ps1')
+    Copy-Item -LiteralPath (Join-Path $workspaceRoot '.agent/shared/Setup-TeacherHarness.ps1') -Destination (Join-Path $setupWorkspace '.agent/shared/Setup-TeacherHarness.ps1')
     Copy-Item -LiteralPath (Join-Path $workspaceRoot '.agent/shared/Resolve-TeacherHarnessConfig.ps1') -Destination (Join-Path $setupWorkspace '.agent/shared/Resolve-TeacherHarnessConfig.ps1')
-    $null = & (Join-Path $setupWorkspace 'Setup.ps1') -CheckOnly
+    $null = & (Join-Path $setupWorkspace '.agent/shared/Setup-TeacherHarness.ps1') -CheckOnly
     Assert-InputTest -Condition (-not (Test-Path -LiteralPath (Join-Path $setupWorkspace 'Output'))) -Message 'Setup CheckOnly with references creates no folders'
-    $null = & (Join-Path $setupWorkspace 'Setup.ps1')
+    $null = & (Join-Path $setupWorkspace '.agent/shared/Setup-TeacherHarness.ps1')
     $savedConfig = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $setupWorkspace '.agent/index/delivery-system.json') | ConvertFrom-Json
     Assert-InputTest -Condition ($savedConfig.receiveInputs -eq $false -and $savedConfig.outputLayout -eq 'flat') -Message 'Setup preserves reference and flat-layout configuration'
     Assert-InputTest -Condition ((Test-Path -LiteralPath (Join-Path $setupWorkspace 'Output')) -and -not (Test-Path -LiteralPath (Join-Path $setupWorkspace 'Output/.ai'))) -Message 'Setup creates only the output root when receipt copying is disabled'
