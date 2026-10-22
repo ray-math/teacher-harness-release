@@ -11,8 +11,10 @@ param(
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'HumanDeliveryContract.ps1')
 $context = Get-HumanDeliveryContext -JobPath $JobPath -DeliveryConfigPath $DeliveryConfigPath
+Assert-HumanDeliveryStage -Context $context -Stage $Stage
 Assert-HumanDeliveryChecks $ChecksCompleted
 $files = @(Get-HumanDeliveryFiles -Context $context -SourceFile $SourceFile -TargetRelativePath $TargetRelativePath)
+$contentValidation = Assert-HumanContentValidation -Context $context -Files $files
 $checks = @(foreach ($item in $CheckReceiptFile) {
     $path = Assert-WorkStoragePath $item
     if (-not $path.StartsWith((Join-Path $context.jobPath 'wip\receipts') + '\', [StringComparison]::OrdinalIgnoreCase)) { throw 'Completion check receipts must stay in this job receipts tree.' }
@@ -24,7 +26,7 @@ $receipt = [ordered]@{
     deliveryCycleId=[string]$context.cycle.id;requestKey=[string]$context.cycle.requestKey;requestTextSha256=(Get-DocumentScopeTextHash ([string]$context.cycle.requestText))
     documentBasis=$context.basis
     completedAt=(Get-Date -Format 'o');documentScope=(Get-HumanDeliveryScopeSnapshot $context.scope)
-    checksCompleted=@($ChecksCompleted);checkReceipts=$checks;files=$files
+    checksCompleted=@($ChecksCompleted);checkReceipts=$checks;files=$files;contentValidation=$contentValidation
 }
 $path = Assert-WorkStoragePath (Join-Path $context.jobPath 'wip\receipts\human-delivery-ready.json')
 $parent = [IO.Path]::GetDirectoryName($path)

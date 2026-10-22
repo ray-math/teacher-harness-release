@@ -12,22 +12,23 @@ if (Test-Path -LiteralPath $pathResolver) {
 $cabinet=[IO.Path]::GetFullPath($config.humanCabinet)
 $watch=[Diagnostics.Stopwatch]::StartNew()
 $runtimeNames=@('Update-HumanWorkConsole.ps1','Open-HumanWorkPath.ps1','Register-HumanWorkOpenProtocol.ps1','HumanWorkOpenLauncher.cs','Initialize-PortableCabinet.ps1','WorkStorage.ps1','Resolve-TeacherHarnessConfig.ps1','bin\HumanWorkOpenLauncher.exe','bin\HumanWorkOpenLauncher.build.json')
+function Assert-RuntimePath([string]$Path,[switch]$MustExist) {
+    $full=Assert-WorkStoragePath $Path
+    if ($full.Length -ge 260) { throw 'Runtime path exceeds the supported Windows PowerShell 5.1 path length.' }
+    if ($MustExist -and -not (Test-Path -LiteralPath $full)) { throw 'Required installed runtime path is missing.' }
+    $part=$full
+    while ($part) {
+        if (Test-Path -LiteralPath $part) {
+            if ((Get-Item -LiteralPath $part -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Runtime paths must not traverse a reparse point.' }
+        }
+        $parent=[IO.Path]::GetDirectoryName($part)
+        if ($parent -eq $part) { break }
+        $part=$parent
+    }
+    return $full
+}
 if ($RuntimeOnly) {
     if ($IncludeExternalSources) { throw 'RuntimeOnly cannot import external sources.' }
-    function Assert-RuntimePath([string]$Path,[switch]$MustExist) {
-        $full=[IO.Path]::GetFullPath($Path)
-        if ($MustExist -and -not (Test-Path -LiteralPath $full)) { throw 'Required installed runtime path is missing.' }
-        $part=$full
-        while ($part) {
-            if (Test-Path -LiteralPath $part) {
-                if ((Get-Item -LiteralPath $part -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Runtime paths must not traverse a reparse point.' }
-            }
-            $parent=[IO.Path]::GetDirectoryName($part)
-            if ($parent -eq $part) { break }
-            $part=$parent
-        }
-        return $full
-    }
     if (-not [IO.Path]::IsPathRooted([string]$config.humanCabinet)) { throw 'RuntimeOnly needs an absolute configured cabinet.' }
     $cabinet=(Assert-RuntimePath $cabinet -MustExist).TrimEnd('\')
     $installedShared=Assert-RuntimePath (Join-Path $cabinet '.agent\shared') -MustExist
@@ -97,65 +98,210 @@ if ($RuntimeOnly) {
     [ordered]@{ok=$true;runtimeOnly=$true;reused=($changed -eq 0);changedRuntimeFiles=$changed;cabinet=$cabinet;settingsChanged=$false;registryChanged=$false;seconds=$watch.Elapsed.TotalSeconds}|ConvertTo-Json
     return
 }
-& (Join-Path $PSScriptRoot 'Register-HumanWorkOpenProtocol.ps1') -BuildOnly | Out-Null
-$installedIndex=Join-Path $cabinet '.agent\index'
-$stampPath=Join-Path $installedIndex 'runtime-install.json'
-$signature=(@(foreach($name in $runtimeNames){(Get-FileHash -LiteralPath (Join-Path $PSScriptRoot $name)).Hash}) -join ':')+':'+(Get-FileHash -LiteralPath $PSCommandPath).Hash+':'+(Get-FileHash -LiteralPath (Join-Path $workspace '.agent\index\delivery-system.json')).Hash
-if(-not $IncludeExternalSources -and (Test-Path -LiteralPath $stampPath)){
-    $stamp=Get-Content -LiteralPath $stampPath -Raw -Encoding utf8|ConvertFrom-Json
-    $valid=$stamp.signature -eq $signature -and $stamp.cabinet -ieq $cabinet
-    foreach($name in $runtimeNames){$dest=Join-Path $cabinet ('.agent\shared\'+$name);if(-not(Test-Path -LiteralPath $dest) -or (Get-FileHash -LiteralPath $dest).Hash -ne (Get-FileHash -LiteralPath (Join-Path $PSScriptRoot $name)).Hash){$valid=$false}}
-    foreach($name in @('StartHere.html','Setup.cmd','.agent\index\delivery-system.json','.agent\index\human-open-targets.json')){if(-not(Test-Path -LiteralPath (Join-Path $cabinet $name))){$valid=$false}}
-    if($valid){
-        $internalFolders=@((Join-Path $cabinet '.agent'))+@(Get-ChildItem -LiteralPath $cabinet -Directory | Where-Object { (Test-WorkFolderName $_.Name) -and -not($_.Attributes -band [IO.FileAttributes]::ReparsePoint) } | ForEach-Object { Join-Path $_.FullName '.ai' })
-        foreach($internalFolder in $internalFolders){
-            if(-not(Test-Path -LiteralPath $internalFolder -PathType Container)){continue}
-            $attributes=[IO.File]::GetAttributes($internalFolder)
-            if($attributes -band [IO.FileAttributes]::ReparsePoint){throw 'Internal folders must not be reparse points.'}
-            [IO.File]::SetAttributes($internalFolder,($attributes -bor [IO.FileAttributes]::Hidden))
-        }
-        if(-not $NoRegister){
-            $key='HKCU:\Software\Classes\'+$config.openProtocol+'\shell\open\command'
-            $expected='"'+(Join-Path $cabinet '.agent\shared\bin\HumanWorkOpenLauncher.exe')+'" "%1"'
-            if(-not(Test-Path $key) -or (Get-Item $key).GetValue('') -ne $expected){& (Join-Path $cabinet '.agent\shared\Register-HumanWorkOpenProtocol.ps1')|Out-Null}
-        }
-        [ordered]@{ok=$true;reused=$true;seconds=$watch.Elapsed.TotalSeconds}|ConvertTo-Json
-        return
-    }
-}
-New-Item -ItemType Directory -Path $cabinet -Force|Out-Null
-$archive=Join-Path ([IO.Path]::GetTempPath()) ('hwpx-portable-'+[guid]::NewGuid().ToString('N'))
-New-Item -ItemType Directory -Path $archive -Force | Out-Null
-$manifest=if(Test-Path -LiteralPath (Join-Path $cabinet $config.openTargetManifest)){Get-Content (Join-Path $cabinet $config.openTargetManifest) -Raw -Encoding utf8 | ConvertFrom-Json}else{@{workFolders=@()}}
-foreach($work in $manifest.workFolders){
-    if([IO.Path]::GetDirectoryName($work.workFolder) -ine $cabinet){continue}
-    # Stale registrations and a missing regenerable HTML must not block runtime repair.
-    if(-not(Test-Path -LiteralPath $work.workFolder -PathType Container)){continue}
-    if((Get-Item -LiteralPath $work.workFolder -Force).Attributes -band [IO.FileAttributes]::ReparsePoint){throw 'Registered work folder must not redirect through a reparse point.'}
-    $backup=Join-Path $archive ([IO.Path]::GetFileName($work.workFolder))
-    New-Item -ItemType Directory -Path $backup -Force | Out-Null
-    if(Test-Path -LiteralPath $work.console -PathType Leaf){Copy-Item -LiteralPath $work.console -Destination $backup}
-    $selected=@(if($IncludeExternalSources){foreach($target in $work.targets){
-        if(-not $target.StartsWith($cabinet+'\',[StringComparison]::OrdinalIgnoreCase)){
-            [pscustomobject]@{path=$target;sha256=(Get-FileHash -LiteralPath $target).Hash;userProvided=$true;role='handover_reference';selectedAt=(Get-Date -Format o)}
-        }
-    }})
-    if($IncludeExternalSources -and $selected.Count){ & (Join-Path $PSScriptRoot 'Sync-HumanSourcePreservation.ps1') -WorkFolder $work.workFolder -Source $selected | Out-Null }
+# Full installation uses the same path boundary as RuntimeOnly, before even a build.
+$cabinet=(Assert-RuntimePath $cabinet).TrimEnd('\')
+if ($cabinet -ieq ([IO.Path]::GetPathRoot($cabinet).TrimEnd('\'))) { throw 'The cabinet must be a dedicated directory, not a drive root.' }
+if ($cabinet -ieq $workspace.TrimEnd('\')) { throw 'The cabinet must be separate from the maintenance harness.' }
+if ([string]$config.openProtocol -notmatch '^[a-z][a-z0-9+.-]+$') { throw 'Invalid direct-open protocol.' }
+foreach ($name in @('consoleFileName','metadataFolderName','workMetadataName','archiveFolderName')) {
+    $value=[string]$config.$name
+    if ([string]::IsNullOrWhiteSpace($value) -or $value -match '[\\/:*?"<>|\x00-\x1f]' -or $value -in @('.','..') -or $value.TrimEnd(' ','.') -cne $value) { throw "Invalid cabinet filename setting: $name" }
 }
 $shared=Join-Path $cabinet '.agent\shared'
 $index=Join-Path $cabinet '.agent\index'
-New-Item -ItemType Directory -Path $shared,$index,(Join-Path $shared 'bin') -Force | Out-Null
-foreach($name in @('Update-HumanWorkConsole.ps1','Open-HumanWorkPath.ps1','Register-HumanWorkOpenProtocol.ps1','HumanWorkOpenLauncher.cs','Initialize-PortableCabinet.ps1','WorkStorage.ps1')){
-    $dest=Join-Path $shared $name
-    if(Test-Path -LiteralPath $dest){Copy-Item -LiteralPath $dest -Destination (Join-Path $archive $name)}
-    Copy-Item -LiteralPath (Join-Path $PSScriptRoot $name) -Destination $dest -Force
+$stampPath=Join-Path $index 'runtime-install.json'
+$manifestPath=[IO.Path]::GetFullPath((Join-Path $cabinet ([string]$config.openTargetManifest)))
+if (-not $manifestPath.StartsWith($index+'\',[StringComparison]::OrdinalIgnoreCase)) { throw 'The open-target manifest must stay inside the cabinet runtime index.' }
+foreach ($path in @($cabinet,(Join-Path $cabinet '.agent'),$shared,$index,(Join-Path $shared 'bin'))) {
+    [void](Assert-RuntimePath $path)
+    if (Test-Path -LiteralPath $path -PathType Leaf) { throw 'Runtime directory path is occupied by a file.' }
 }
-Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'bin\HumanWorkOpenLauncher.exe') -Destination (Join-Path $shared 'bin') -Force
-Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'bin\HumanWorkOpenLauncher.build.json') -Destination (Join-Path $shared 'bin') -Force
-$config.humanCabinet=$cabinet
-$config.incomingRoot=$cabinet
-$config.PSObject.Properties.Remove('priorMaterialsRoot')
-$config | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $index 'delivery-system.json') -Encoding utf8
+foreach ($name in $runtimeNames) {
+    $source=Assert-RuntimePath (Join-Path $PSScriptRoot $name)
+    $dest=Assert-RuntimePath (Join-Path $shared $name)
+    if ((Test-Path -LiteralPath $source -PathType Container) -or (Test-Path -LiteralPath $dest -PathType Container)) { throw 'Runtime payload paths must be files.' }
+    if (-not $name.StartsWith('bin\') -and -not (Test-Path -LiteralPath $source -PathType Leaf)) { throw 'Required source runtime file is missing.' }
+}
+foreach ($path in @($manifestPath,$stampPath,(Join-Path $index 'delivery-system.json'),(Join-Path $index 'human-open-launcher.json'),(Join-Path $cabinet 'StartHere.html'),(Join-Path $cabinet 'Setup.cmd'))) {
+    [void](Assert-RuntimePath $path)
+    if (Test-Path -LiteralPath $path -PathType Container) { throw 'Runtime output path is occupied by a directory.' }
+}
+
+# Serialize installation with console publication; nested console updates use this
+# process/thread's reentrant mutex, while other readers cannot publish mid-rollback.
+$installMutex=[Threading.Mutex]::new($false,'Local\HwpxHumanOpenTargets')
+$installLocked=$false
+$journal=[Collections.Generic.Dictionary[string,object]]::new([StringComparer]::OrdinalIgnoreCase)
+$trees=[Collections.Generic.List[string]]::new()
+$registryBefore=@()
+$registryTouched=$false
+$transactionStarted=$false
+function Get-InstallItems([string]$Path) {
+    [void](Assert-RuntimePath $Path)
+    if (-not (Test-Path -LiteralPath $Path)) { return }
+    $item=Get-Item -LiteralPath $Path -Force
+    $item
+    if ($item.PSIsContainer) {
+        foreach ($child in Get-ChildItem -LiteralPath $Path -Force) {
+            # Check a child before recursing, never traverse a junction to inspect it.
+            Get-InstallItems $child.FullName
+        }
+    }
+}
+function Save-InstallPath([string]$Path,[switch]$Tree) {
+    $full=Assert-RuntimePath $Path
+    if ($full -ine $cabinet -and -not $full.StartsWith($cabinet+'\',[StringComparison]::OrdinalIgnoreCase)) { throw 'Installation snapshots must stay inside the selected cabinet.' }
+    if ($Tree -and -not $trees.Contains($full)) { $trees.Add($full) }
+    $items=if ($Tree) { @(Get-InstallItems $full) } elseif (Test-Path -LiteralPath $full) { @(Get-Item -LiteralPath $full -Force) } else { @() }
+    if (-not $items.Count -and -not $journal.ContainsKey($full)) { $journal.Add($full,[pscustomobject]@{path=$full;existed=$false;directory=$false;bytes=$null;attributes=0;time=$null}) }
+    foreach ($item in $items) {
+        if ($journal.ContainsKey($item.FullName)) { continue }
+        $bytes=$null
+        if (-not $item.PSIsContainer) { $bytes=[IO.File]::ReadAllBytes($item.FullName) }
+        $journal.Add($item.FullName,[pscustomobject]@{path=$item.FullName;existed=$true;directory=[bool]$item.PSIsContainer;bytes=$bytes;attributes=$item.Attributes;time=$item.LastWriteTimeUtc})
+    }
+}
+function New-InstallDirectory([string]$Path) {
+    [void](Assert-RuntimePath $Path)
+    if (Test-Path -LiteralPath $Path -PathType Container) { return }
+    Save-InstallPath $Path
+    $parent=[IO.Path]::GetDirectoryName($Path)
+    if (-not (Test-Path -LiteralPath $parent -PathType Container)) { New-InstallDirectory $parent }
+    [void][IO.Directory]::CreateDirectory($Path)
+}
+function Write-InstallFile([string]$Path,[byte[]]$Bytes) {
+    [void](Assert-RuntimePath $Path)
+    Save-InstallPath $Path
+    New-InstallDirectory ([IO.Path]::GetDirectoryName($Path))
+    $temporary=Join-Path ([IO.Path]::GetDirectoryName($Path)) ('.install-'+[guid]::NewGuid().ToString('N')+'.tmp')
+    try {
+        [void](Assert-RuntimePath $temporary)
+        [IO.File]::WriteAllBytes($temporary,$Bytes)
+        $hash=(Get-FileHash -LiteralPath $temporary -Algorithm SHA256).Hash
+        [void](Assert-RuntimePath $Path)
+        [IO.File]::Copy($temporary,$Path,$true)
+        if ((Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash -cne $hash) { throw 'Installed file verification failed.' }
+    } finally { if (Test-Path -LiteralPath $temporary -PathType Leaf) { [IO.File]::Delete($temporary) } }
+}
+function Restore-Install {
+    # Remove only entries created in managed trees, then restore their old bytes.
+    foreach ($tree in $trees) {
+        foreach ($item in @(Get-InstallItems $tree | Sort-Object { $_.FullName.Length } -Descending)) {
+            if ($journal.ContainsKey($item.FullName) -and $journal[$item.FullName].existed) { continue }
+            [void](Assert-RuntimePath $item.FullName)
+            if ($item.PSIsContainer) { [IO.Directory]::Delete($item.FullName) } else { [IO.File]::Delete($item.FullName) }
+        }
+    }
+    foreach ($entry in @($journal.Values | Where-Object { -not $_.directory } | Sort-Object { $_.path.Length } -Descending)) {
+        [void](Assert-RuntimePath $entry.path)
+        if (-not $entry.existed) {
+            if (Test-Path -LiteralPath $entry.path -PathType Leaf) { [IO.File]::Delete($entry.path) }
+            elseif (Test-Path -LiteralPath $entry.path -PathType Container) { [IO.Directory]::Delete($entry.path) }
+            continue
+        }
+        $same=$false
+        if (Test-Path -LiteralPath $entry.path -PathType Leaf) {
+            $sha=[Security.Cryptography.SHA256]::Create()
+            try { $oldHash=[BitConverter]::ToString($sha.ComputeHash([byte[]]$entry.bytes)) } finally { $sha.Dispose() }
+            $same=(Get-FileHash -LiteralPath $entry.path -Algorithm SHA256).Hash -ceq $oldHash.Replace('-','')
+        }
+        if (-not $same) { [IO.File]::WriteAllBytes($entry.path,[byte[]]$entry.bytes) }
+        [IO.File]::SetAttributes($entry.path,$entry.attributes)
+        [IO.File]::SetLastWriteTimeUtc($entry.path,$entry.time)
+    }
+    foreach ($entry in @($journal.Values | Where-Object { $_.directory } | Sort-Object { $_.path.Length } -Descending)) {
+        [void](Assert-RuntimePath $entry.path)
+        [IO.File]::SetAttributes($entry.path,$entry.attributes)
+        [IO.Directory]::SetLastWriteTimeUtc($entry.path,$entry.time)
+    }
+}
+function Save-InstallRegistration {
+    foreach ($suffix in @('','\shell','\shell\open','\shell\open\command')) {
+        $path='Software\Classes\'+$config.openProtocol+$suffix
+        $key=[Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($path)
+        $values=@()
+        if ($null -ne $key) {
+            try { foreach ($name in $key.GetValueNames()) { $values+= [pscustomobject]@{name=$name;value=$key.GetValue($name,$null,[Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames);kind=$key.GetValueKind($name)} } } finally { $key.Dispose() }
+        }
+        [pscustomobject]@{path=$path;existed=($null -ne $key);values=$values}
+    }
+}
+function Restore-InstallRegistration {
+    foreach ($entry in @($registryBefore | Sort-Object { $_.path.Length } -Descending)) {
+        if (-not $entry.existed) { [Microsoft.Win32.Registry]::CurrentUser.DeleteSubKey($entry.path,$false);continue }
+        $key=[Microsoft.Win32.Registry]::CurrentUser.CreateSubKey($entry.path)
+        try {
+            foreach ($name in $key.GetValueNames()) { if ($name -notin @($entry.values | ForEach-Object { $_.name })) { $key.DeleteValue($name,$false) } }
+            foreach ($value in $entry.values) { $key.SetValue($value.name,$value.value,$value.kind) }
+        } finally { $key.Dispose() }
+    }
+}
+try {
+    try { $installLocked=$installMutex.WaitOne([TimeSpan]::FromSeconds(15)) } catch [Threading.AbandonedMutexException] { $installLocked=$true }
+    if (-not $installLocked) { throw 'Timed out waiting for cabinet installation.' }
+    # Snapshot only the installed runtime and explicitly affected work metadata/HTML.
+    # Backup bytes stay in memory; no school information is left in TEMP diagnostics.
+    Save-InstallPath $cabinet
+    Save-InstallPath (Join-Path $cabinet '.agent') -Tree
+    Save-InstallPath (Join-Path $cabinet 'Setup.cmd')
+    Save-InstallPath (Join-Path $cabinet 'StartHere.html')
+    if (Test-Path -LiteralPath $cabinet -PathType Container) {
+        foreach ($work in Get-ChildItem -LiteralPath $cabinet -Directory -Force) {
+            if (-not (Test-WorkFolderName $work.Name) -or ($work.Attributes -band [IO.FileAttributes]::ReparsePoint)) { continue }
+            $meta=Join-Path $work.FullName '.ai'
+            if (-not (Test-Path -LiteralPath (Join-Path $meta 'work.json') -PathType Leaf)) { continue }
+            Save-InstallPath $work.FullName
+            Save-InstallPath $meta -Tree:$IncludeExternalSources
+            Save-InstallPath (Join-Path $work.FullName ([string]$config.consoleFileName))
+        }
+    }
+    $manifest=if(Test-Path -LiteralPath $manifestPath){Get-Content -LiteralPath $manifestPath -Raw -Encoding utf8 | ConvertFrom-Json}else{@{workFolders=@()}}
+    # Validate external-source import destinations before build or preservation writes.
+    foreach ($work in $manifest.workFolders) {
+        if ([IO.Path]::GetDirectoryName([string]$work.workFolder) -ine $cabinet -or -not (Test-Path -LiteralPath $work.workFolder -PathType Container)) { continue }
+        [void](Assert-RuntimePath $work.workFolder)
+        if ($IncludeExternalSources) {
+            Save-InstallPath (Join-Path $work.workFolder ([string]$config.metadataFolderName)) -Tree
+            # Legacy preservation records can restore a missing copy in this tree.
+            Save-InstallPath (Join-Path $work.workFolder ([string]$config.archiveFolderName)) -Tree
+        }
+    }
+    & (Join-Path $PSScriptRoot 'Register-HumanWorkOpenProtocol.ps1') -BuildOnly | Out-Null
+    # Stage and verify the complete payload before changing any cabinet file.
+    $payloads=@(foreach ($name in $runtimeNames) {
+        $source=Assert-RuntimePath (Join-Path $PSScriptRoot $name) -MustExist
+        [pscustomobject]@{path=(Join-Path $shared $name);bytes=[IO.File]::ReadAllBytes($source);hash=(Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash}
+    })
+    $signature=(@($payloads | ForEach-Object { $_.hash }) -join ':')+':'+(Get-FileHash -LiteralPath $PSCommandPath).Hash+':'+(Get-FileHash -LiteralPath (Join-Path $workspace '.agent\index\delivery-system.json')).Hash
+    $valid=$false
+    if (-not $IncludeExternalSources -and (Test-Path -LiteralPath $stampPath -PathType Leaf)) {
+        try {
+            $stamp=Get-Content -LiteralPath $stampPath -Raw -Encoding utf8 | ConvertFrom-Json
+            $valid=$stamp.signature -ceq $signature -and $stamp.cabinet -ieq $cabinet
+            foreach ($item in $payloads) { if (-not (Test-Path -LiteralPath $item.path -PathType Leaf) -or (Get-FileHash -LiteralPath $item.path).Hash -cne $item.hash) { $valid=$false } }
+            foreach ($path in @((Join-Path $cabinet 'StartHere.html'),(Join-Path $cabinet 'Setup.cmd'),(Join-Path $index 'delivery-system.json'),(Join-Path $index 'human-open-launcher.json'),$manifestPath)) { if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { $valid=$false } }
+            $installedConfig=Get-Content -LiteralPath (Join-Path $index 'delivery-system.json') -Raw -Encoding utf8 | ConvertFrom-Json
+            if ([IO.Path]::GetFullPath([string]$installedConfig.humanCabinet).TrimEnd('\') -ine $cabinet -or [IO.Path]::GetFullPath([string]$installedConfig.incomingRoot).TrimEnd('\') -ine $cabinet) { $valid=$false }
+            foreach ($name in @('openProtocol','openTargetManifest','consoleFileName','metadataFolderName','workMetadataName')) { if ([string]$installedConfig.$name -cne [string]$config.$name) { $valid=$false } }
+            $launcherSettings=Get-Content -LiteralPath (Join-Path $index 'human-open-launcher.json') -Raw -Encoding utf8 | ConvertFrom-Json
+            if ([string]$launcherSettings.handler -ine (Join-Path $shared 'Open-HumanWorkPath.ps1') -or [string]$launcherSettings.shell -ine (Get-Command powershell.exe -ErrorAction Stop).Source) { $valid=$false }
+            foreach ($entry in $manifest.workFolders) { foreach ($target in $entry.targets) { if (-not ([string]$target).StartsWith($cabinet+'\',[StringComparison]::OrdinalIgnoreCase)) { $valid=$false } } }
+        } catch { $valid=$false }
+    }
+    $transactionStarted=$true
+    if (-not $valid) {
+        foreach ($work in $manifest.workFolders) {
+            if ([IO.Path]::GetDirectoryName([string]$work.workFolder) -ine $cabinet -or -not (Test-Path -LiteralPath $work.workFolder -PathType Container)) { continue }
+            $selected=@(if ($IncludeExternalSources) { foreach ($target in $work.targets) {
+                if (-not $target.StartsWith($cabinet+'\',[StringComparison]::OrdinalIgnoreCase)) { [pscustomobject]@{path=$target;sha256=(Get-FileHash -LiteralPath $target).Hash;userProvided=$true;role='handover_reference';selectedAt=(Get-Date -Format o)} }
+            } })
+            if ($selected.Count) { & (Join-Path $PSScriptRoot 'Sync-HumanSourcePreservation.ps1') -WorkFolder $work.workFolder -Source $selected | Out-Null }
+        }
+        foreach ($item in $payloads) { Write-InstallFile $item.path $item.bytes }
+        $config.humanCabinet=$cabinet
+        $config.incomingRoot=$cabinet
+        $config.PSObject.Properties.Remove('priorMaterialsRoot')
+        Write-InstallFile (Join-Path $index 'delivery-system.json') ([Text.UTF8Encoding]::new($true).GetBytes(($config | ConvertTo-Json -Depth 10)))
 $cmd=@'
 @echo off
 chcp 65001 >nul
@@ -167,7 +313,7 @@ if errorlevel 1 (
 )
 pause
 '@
-[IO.File]::WriteAllText((Join-Path $cabinet 'Setup.cmd'),($cmd -replace '\r?\n',"`r`n"),[Text.UTF8Encoding]::new($false))
+        Write-InstallFile (Join-Path $cabinet 'Setup.cmd') ([Text.UTF8Encoding]::new($false).GetBytes(($cmd -replace '\r?\n',"`r`n")))
 $guide=@'
 <!doctype html><html lang="ko"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>처음 사용 안내</title>
 <style>body{font:18px/1.7 system-ui;background:#f4f6f8;color:#172638;margin:0}main{max-width:720px;margin:40px auto;padding:32px;background:white;border-radius:16px}h1{font-size:30px}li{margin:16px 0}code{background:#eef2f6;padding:4px 8px}</style>
@@ -176,7 +322,31 @@ $guide=@'
 <h2>설정은 처음 한 번</h2><p>폴더를 다른 위치로 옮겼거나 다른 Windows 계정에서 사용할 때는 Setup.cmd를 다시 실행하세요. 이후에는 이 안내를 열 필요가 없습니다.</p>
 <p>한글·Excel 문서를 편집하려면 해당 프로그램과 라이선스가 필요합니다. 파일 열기 설정만으로 유료 프로그램이 설치되지는 않습니다.</p><p>공유할 때는 숨겨진 파일을 포함한 업무 폴더 전체를 전달하세요.</p></main></html>
 '@
-[IO.File]::WriteAllText((Join-Path $cabinet 'StartHere.html'),$guide,[Text.UTF8Encoding]::new($true))
-& (Join-Path $shared 'Initialize-PortableCabinet.ps1') -NoRegister:$NoRegister | Out-Null
-[ordered]@{signature=$signature;cabinet=$cabinet}|ConvertTo-Json|Set-Content -LiteralPath $stampPath -Encoding utf8
-[ordered]@{ok=$true;reused=$false;cabinet=$cabinet;backup=$archive;seconds=$watch.Elapsed.TotalSeconds} | ConvertTo-Json
+        Write-InstallFile (Join-Path $cabinet 'StartHere.html') ([Text.UTF8Encoding]::new($true).GetBytes($guide))
+        $launcherSettings=[ordered]@{schemaVersion='hwpx-human-open-launcher/v3';shell=(Get-Command powershell.exe -ErrorAction Stop).Source;handler=(Join-Path $shared 'Open-HumanWorkPath.ps1')}
+        Write-InstallFile (Join-Path $index 'human-open-launcher.json') ([Text.UTF8Encoding]::new($true).GetBytes(($launcherSettings | ConvertTo-Json)))
+        & (Join-Path $shared 'Initialize-PortableCabinet.ps1') -NoRegister | Out-Null
+        Write-InstallFile $stampPath ([Text.UTF8Encoding]::new($true).GetBytes(([ordered]@{signature=$signature;cabinet=$cabinet}|ConvertTo-Json)))
+    } else {
+        foreach ($entry in $journal.Values) {
+            if ($entry.directory -and ([IO.Path]::GetFileName($entry.path) -in @('.agent','.ai'))) { [IO.File]::SetAttributes($entry.path,($entry.attributes -bor [IO.FileAttributes]::Hidden)) }
+        }
+    }
+    # Registration is the last step. Roll back only this protocol's own key values.
+    if (-not $NoRegister) {
+        $registryBefore=@(Save-InstallRegistration)
+        $registryTouched=$true
+        & (Join-Path $shared 'Register-HumanWorkOpenProtocol.ps1') | Out-Null
+    }
+    [ordered]@{ok=$true;reused=$valid;cabinet=$cabinet;backup=$null;seconds=$watch.Elapsed.TotalSeconds}|ConvertTo-Json
+} catch {
+    $failure=$_
+    $rollbackErrors=@()
+    if ($registryTouched) { try { Restore-InstallRegistration } catch { $rollbackErrors+=$_.Exception.Message } }
+    if ($transactionStarted) { try { Restore-Install } catch { $rollbackErrors+=$_.Exception.Message } }
+    if ($rollbackErrors.Count) { throw ('Cabinet installation failed and rollback needs attention: '+($rollbackErrors -join '; ')) }
+    throw $failure
+} finally {
+    if ($installLocked) { $installMutex.ReleaseMutex() }
+    $installMutex.Dispose()
+}

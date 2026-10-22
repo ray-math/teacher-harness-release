@@ -17,6 +17,8 @@ try {
     $config=Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $workspace '.agent/index/delivery-system.json')|ConvertFrom-Json
     $baseline=Join-Path $fixture 'existing-form.csv'
     [IO.File]::WriteAllText($baseline,"name,value`r`n,",[Text.UTF8Encoding]::new($true))
+    $config | Add-Member outputLayout 'work' -Force
+    $config | Add-Member receiveInputs $true -Force
     $config.incomingRoot=Join-Path $fixture 'incoming';$config.humanCabinet=$cabinet;$config|ConvertTo-Json|Set-Content -LiteralPath (Join-Path $index 'delivery-system.json') -Encoding utf8
     . (Join-Path $shared 'WorkStorage.ps1')
     function Invoke-ReadyPublication {

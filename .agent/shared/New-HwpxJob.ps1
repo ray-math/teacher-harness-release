@@ -27,8 +27,9 @@ if ($WorkFolder) {
         $config = Resolve-TeacherHarnessConfig -Workspace $workspace -Config $config
     } elseif (-not [IO.Path]::IsPathRooted([string]$config.humanCabinet)) { throw 'Relative delivery paths require Resolve-TeacherHarnessConfig.ps1.' }
     $workRoot = Assert-WorkStoragePath $WorkFolder
-    $cabinet = [IO.Path]::GetFullPath([string]$config.humanCabinet).TrimEnd('\')
-    if ([IO.Path]::GetDirectoryName($workRoot) -ine $cabinet -or -not (Test-WorkFolderName ([IO.Path]::GetFileName($workRoot)))) { throw 'WorkFolder must be a direct numbered or legacy dated work folder in the configured cabinet.' }
+    $cabinet = Get-WorkContainerRoot $config
+    if ($config.outputLayout -eq 'flat' -and [IO.Path]::GetDirectoryName($workRoot) -ieq [IO.Path]::GetFullPath([string]$config.humanCabinet).TrimEnd('\')) { $cabinet = [IO.Path]::GetFullPath([string]$config.humanCabinet).TrimEnd('\') }
+    if ([IO.Path]::GetDirectoryName($workRoot) -ine $cabinet -or -not (Test-WorkFolderName ([IO.Path]::GetFileName($workRoot)))) { throw 'WorkFolder must be a direct work folder with a safe name in the configured cabinet.' }
     $jobsRoot = Join-Path (Join-Path $workRoot ([string]$config.metadataFolderName)) 'jobs'
 }
 $jobName = "$Date-$Slug"

@@ -21,6 +21,8 @@ try {
     $config=Get-Content -LiteralPath (Join-Path $workspace '.agent\index\delivery-system.json') -Raw -Encoding utf8 | ConvertFrom-Json
     $baseline=Join-Path $fixture 'existing-form.csv'
     [IO.File]::WriteAllText($baseline,"name,value`r`n,",[Text.UTF8Encoding]::new($true))
+    $config | Add-Member outputLayout 'work' -Force
+    $config | Add-Member receiveInputs $true -Force
     $config.incomingRoot=Join-Path $fixture 'incoming';$config.humanCabinet=$cabinet
     $config | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath (Join-Path $index 'delivery-system.json') -Encoding utf8
     $start=Join-Path $shared 'Start-HwpxWork.ps1';$publish=Join-Path $shared 'Publish-HumanResult.ps1';$complete=Join-Path $shared 'Complete-HumanDraft.ps1'
@@ -128,6 +130,31 @@ try {
     $resume=Json (& $start @summaryFollow)
     $resume=Json (& $start @summaryFollow)
     Check ($resume.reused -and $resume.jobPath -ceq $job -and (Test-Path -LiteralPath $resume.receiptPath)) 'summary reused intake retains same job and evidence'
+    $draftArgs=@{Mode='New';FormFile=$baseline;TaskTitle='Draft first fixture';JobSlug='draft-first';IntakeSummary='Save a partial draft';DecisionReason='Synthetic draft request';RequestId='draft-one';DraftFirst=$true;Summary=$true}
+    Reject {& $start @draftArgs -RequireContentValidation} 'cannot be combined' 'draft-first rejects contradictory strict validation flags'
+    $partial=Json (& $start @draftArgs)
+    $partialFile=Join-Path $partial.jobPath 'wip\docs\partial.csv'
+    Copy-Item -LiteralPath $baseline -Destination $partialFile
+    $partialInputs=Get-Content -LiteralPath (Join-Path $partial.jobPath 'inputs.json') -Raw -Encoding utf8 | ConvertFrom-Json
+    Check ($partial.draftFirst -and $partialInputs.deliveryCycle.draftFirst -and -not $partialInputs.deliveryCycle.requireContentValidation -and -not $partialInputs.requiredContentProfile) 'draft-first explicitly records Review mode without mandatory profile'
+    Reject {& $complete -JobPath $partial.jobPath -SourceFile $partialFile -TargetRelativePath 'partial.csv' -Stage Final -ChecksCompleted @('content','integrity')} 'only be saved at Review' 'draft-first cannot claim Final completion'
+    Reject {& $complete -JobPath $partial.jobPath -SourceFile $partialFile -TargetRelativePath 'partial.csv' -Stage Review -ChecksCompleted @('content')} 'integrity' 'draft-first still requires integrity check'
+    $ready=Json (& $complete -JobPath $partial.jobPath -SourceFile $partialFile -TargetRelativePath 'partial.csv' -Stage Review -ChecksCompleted @('content','integrity'))
+    $partialPub=@{Stage='Review';TaskTitle='Draft first fixture';WorkFolderName=$partial.workFolderName;SourceFile=@($partialFile);TargetRelativePath=@('partial.csv')}
+    $partialResult=Json (& $publish @partialPub)
+    Check ((Test-Path -LiteralPath (Join-Path $partial.workRoot 'partial.csv')) -and $ready.stage -eq 'Review') 'incomplete draft saves to visible work folder at Review'
+    $partialPub.Stage='Final'
+    Reject {& $publish @partialPub} 'only be saved at Review' 'publication also rejects draft-first Final stage'
+    $followDraft=Json (& $start -Mode FollowUp -TaskTitle 'Draft first fixture' -WorkFolderName $partial.workFolderName -JobPath $partial.jobPath -IntakeSummary 'Fill the missing value' -DecisionReason 'Synthetic follow-up' -RequestId 'draft-two' -DraftFirst -Summary)
+    [IO.File]::WriteAllText($partialFile,"name,value`r`nitem,filled")
+    & $complete -JobPath $partial.jobPath -SourceFile $partialFile -TargetRelativePath 'partial.csv' -Stage Review -ChecksCompleted @('content','integrity') | Out-Null
+    $partialPub.Stage='Review'
+    $followDraftResult=Json (& $publish @partialPub)
+    Check ($followDraft.jobPath -ceq $partial.jobPath -and $followDraftResult.archivedFiles.Count -eq 1 -and [IO.File]::ReadAllText((Join-Path $partial.workRoot 'partial.csv')).Contains('filled')) 'draft-first follow-up reuses job and preserves previous current draft'
+    $strict=Json (& $start -Mode New -FormFile $baseline -TaskTitle 'Strict fixture' -JobSlug 'strict-fixture' -IntakeSummary 'Strict validation' -DecisionReason 'Synthetic strict request' -RequireContentValidation -Summary)
+    Reject {& $start -Mode FollowUp -FormFile $baseline -TaskTitle 'Strict fixture' -WorkFolderName $strict.workFolderName -JobPath $strict.jobPath -IntakeSummary 'Save draft instead' -RequestId 'strict-new' -DecisionReason 'Synthetic request' -DraftFirst} 'cannot weaken' 'draft-first cannot remove existing strict validation even with a new request'
+    $strictInputs=Get-Content -LiteralPath (Join-Path $strict.jobPath 'inputs.json') -Raw -Encoding utf8 | ConvertFrom-Json
+    Check ([bool]$strictInputs.deliveryCycle.requireContentValidation) 'rejected draft-first leaves strict requirement intact'
     $report=[ordered]@{ok=$true;count=$checks.Count;summaryBytes=@{intake=$intakeSummaryBytes;intakeFull=$intakeFullBytes;publish=$publishSummaryBytes;publishFull=$publishFullBytes};verification='isolated completed publication, retry, content deduplication and human revision preservation';checks=@($checks)}
     if ($ReceiptPath) {$report|ConvertTo-Json -Depth 5|Set-Content -LiteralPath $ReceiptPath -Encoding utf8}
     $report|ConvertTo-Json -Depth 5

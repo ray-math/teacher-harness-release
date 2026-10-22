@@ -8,6 +8,26 @@ param(
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'Resolve-TeacherHarnessConfig.ps1')
 
+function Assert-ReceiveSupportedPath {
+    param([string]$Path, [ValidateSet('File', 'Directory')][string]$Kind)
+    # This transaction uses Windows PowerShell 5.1 providers and ordinary .NET
+    # paths throughout, including rollback. Do not depend on machine-specific
+    # long-path policy or accept extended paths that only some operations support.
+    if ($Path.StartsWith('\\?\') -or $Path.StartsWith('\\.\')) {
+        throw "Unsupported receive path: extended/device paths are not supported by the Windows PowerShell 5.1 receipt transaction: $Path"
+    }
+    $limit = 259
+    if ($Kind -eq 'Directory') { $limit = 247 }
+    if ($Path.Length -gt $limit) {
+        throw "Unsupported receive path length: $Kind path has $($Path.Length) characters; Windows PowerShell 5.1 receipt transactions support at most $limit characters. No input files have been received: $Path"
+    }
+    foreach ($component in ($Path -split '[\\/]')) {
+        if ($component.Length -gt 255) {
+            throw "Unsupported receive path length: a path component has $($component.Length) characters; at most 255 are supported. No input files have been received: $Path"
+        }
+    }
+}
+
 function Assert-ReceiveSafePath {
     param([Parameter(Mandatory=$true)][string]$Path)
     $cursor = [IO.Path]::GetFullPath($Path)
@@ -68,11 +88,18 @@ if ([string]::IsNullOrWhiteSpace($Workspace)) { $Workspace = Join-Path $PSScript
 $workspaceRoot = [IO.Path]::GetFullPath($Workspace)
 $config = Read-TeacherHarnessConfig -Workspace $workspaceRoot -ConfigPath $ConfigPath
 $incomingRoot = [IO.Path]::GetFullPath([string]$config.incomingRoot)
-$receiptRoot = Join-Path $incomingRoot '.ai\input-receipts'
-Assert-ReceiveSafePath -Path $incomingRoot
-Assert-ReceiveSafePath -Path $receiptRoot
-if ((Test-Path -LiteralPath $incomingRoot) -and -not (Get-Item -Force -LiteralPath $incomingRoot).PSIsContainer) {
-    throw "incomingRoot must be a directory: $incomingRoot"
+if ($config.receiveInputs) {
+    $receiptRoot = Join-Path $incomingRoot '.ai\input-receipts'
+    Assert-ReceiveSupportedPath -Path $incomingRoot -Kind Directory
+    Assert-ReceiveSupportedPath -Path $receiptRoot -Kind Directory
+    # Receipt names are always 64 hexadecimal characters plus .json. Check their
+    # complete future path before inspecting/copying inputs or creating directories.
+    Assert-ReceiveSupportedPath -Path (Join-Path $receiptRoot (('0' * 64) + '.json')) -Kind File
+    Assert-ReceiveSafePath -Path $incomingRoot
+    Assert-ReceiveSafePath -Path $receiptRoot
+    if ((Test-Path -LiteralPath $incomingRoot) -and -not (Get-Item -Force -LiteralPath $incomingRoot).PSIsContainer) {
+        throw "incomingRoot must be a directory: $incomingRoot"
+    }
 }
 
 # Validate and hash every input before making any directory, copy, or receipt.
@@ -80,6 +107,7 @@ $inputs = @()
 foreach ($path in $SourceFile) {
     if ([string]::IsNullOrWhiteSpace($path)) { throw 'SourceFile must contain readable file paths.' }
     $fullPath = [IO.Path]::GetFullPath($path)
+    Assert-ReceiveSupportedPath -Path $fullPath -Kind File
     Assert-ReceiveSafePath -Path $fullPath
     if (-not (Test-Path -LiteralPath $fullPath -PathType Leaf)) { throw "Source file does not exist: $fullPath" }
     $item = Get-Item -Force -LiteralPath $fullPath
@@ -89,6 +117,33 @@ foreach ($path in $SourceFile) {
     $inputs += [pscustomobject]@{ sourcePath = $fullPath; sha256 = (Get-ReceiveFileHash -Path $fullPath) }
 }
 
+if (-not $config.receiveInputs) {
+    # Reference-only mode never creates an incoming folder or receipt. The
+    # receivedPath alias lets existing readers access the validated source.
+    $files = @($inputs | ForEach-Object {
+        [pscustomobject][ordered]@{
+            sourcePath = $_.sourcePath
+            receivedPath = $_.sourcePath
+            sha256 = $_.sha256
+            reused = $true
+            status = 'referenced'
+        }
+    })
+    $identity = @($files | ForEach-Object {
+        [pscustomobject][ordered]@{ sourcePath = $_.sourcePath.ToLowerInvariant(); sha256 = $_.sha256 }
+    }) | ConvertTo-Json -Depth 10 -Compress
+    $algorithm = [Security.Cryptography.SHA256]::Create()
+    try { $fingerprint = ([BitConverter]::ToString($algorithm.ComputeHash((New-Object Text.UTF8Encoding($false)).GetBytes($identity)))).Replace('-', '').ToLowerInvariant() }
+    finally { $algorithm.Dispose() }
+    [pscustomobject][ordered]@{
+        status = 'referenced'
+        receiptPath = ''
+        receiptReused = $false
+        inputFingerprint = $fingerprint
+        files = $files
+    } | ConvertTo-Json -Depth 10
+    return
+}
 $planned = @{}
 $files = @()
 foreach ($inputFile in $inputs) {
@@ -104,6 +159,8 @@ foreach ($inputFile in $inputs) {
         elseif ($attempt -eq 2) { $candidateName = $stem + '__' + $sha256 + $extension }
         else { $candidateName = $stem + '__' + $sha256 + '__' + ($attempt - 2) + $extension }
         $destination = Join-Path $incomingRoot $candidateName
+        # A collision suffix can exceed the limit even when the original name fits.
+        Assert-ReceiveSupportedPath -Path $destination -Kind File
         Assert-ReceiveSafePath -Path $destination
         if ($planned.ContainsKey($destination)) {
             if ($planned[$destination] -eq $sha256) { $reused = $true; break }
@@ -140,6 +197,7 @@ $identityAlgorithm = [Security.Cryptography.SHA256]::Create()
 try { $fingerprint = ([BitConverter]::ToString($identityAlgorithm.ComputeHash($identityBytes))).Replace('-', '').ToLowerInvariant() }
 finally { $identityAlgorithm.Dispose() }
 $receiptPath = Join-Path $receiptRoot ($fingerprint + '.json')
+Assert-ReceiveSupportedPath -Path $receiptPath -Kind File
 Assert-ReceiveSafePath -Path $receiptPath
 if (Test-Path -LiteralPath $receiptPath) { Assert-ReceiveReceipt -Path $receiptPath -Fingerprint $fingerprint -Files $files }
 $createdCopies = New-Object 'System.Collections.Generic.List[string]'

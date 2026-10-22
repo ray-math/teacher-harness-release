@@ -22,6 +22,7 @@ os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
 
 from work_storage import resolve_job
 from document_scope import assert_scope
+from paragraph_target_preflight import read_contract, validate_job
 
 
 def now():
@@ -87,7 +88,8 @@ def setup(args):
         raise ValueError('Output must be HWPX.')
     plan['source'], plan['output'] = str(source), str(output)
     plan.pop('journalPath', None)
-    key = hashlib.sha256(json.dumps([plan, args.source_sha256.lower(), args.dry_run], sort_keys=True,
+    args.paragraph_contract = read_contract(inside(args.paragraph_targets, job)) if args.paragraph_targets else None
+    key = hashlib.sha256(json.dumps([plan, args.source_sha256.lower(), args.dry_run, args.paragraph_contract], sort_keys=True,
                                     ensure_ascii=False).encode()).hexdigest()[:20]
     run = job / 'wip' / 'receipts' / ('edit-' + key)
     run.mkdir(parents=True, exist_ok=True)
@@ -159,6 +161,8 @@ def worker(args, plan, run):
         with file_lock(source, source=True):
             if digest(source) != args.source_sha256.lower():
                 raise ValueError('Source revision differs from the expected intake SHA256.')
+            state['paragraphPreflight'] = validate_job(args.job, source, plan, args.paragraph_contract, args.source_sha256)
+            write_json(run / 'paragraph-preflight.json', state['paragraphPreflight'])
             write_json(run / 'state.json', state)
             report = HwpxOps(base_directory=Path(args.job), auto_backup=True).run_edit_plan(execution, dry_run=args.dry_run)
             write_json(run / 'engine-report.json', report)
@@ -198,6 +202,7 @@ def main():
     parser.add_argument('--job', required=True)
     parser.add_argument('--plan', required=True)
     parser.add_argument('--source-sha256', required=True)
+    parser.add_argument('--paragraph-targets')
     parser.add_argument('--timeout', type=int, default=120)
     parser.add_argument('--dry-run', action='store_true')
     parser.add_argument('--status', action='store_true')
@@ -216,6 +221,9 @@ def main():
         with file_lock(run / 'worker.lock'):
             pass
         state = reconcile(run, plan['output'])
+        with file_lock(Path(plan['source']), source=True):
+            preflight = validate_job(args.job, plan['source'], plan, args.paragraph_contract, args.source_sha256)
+        write_json(run / 'paragraph-preflight.json', preflight)
         if state['status'] in ('saved', 'dry_run_passed'):
             if digest(plan['source']) != args.source_sha256.lower():
                 raise ValueError('Source revision changed; completed receipt cannot be reused.')
@@ -226,11 +234,16 @@ def main():
         if digest(plan['source']) != args.source_sha256.lower():
             raise ValueError('Source revision differs from expected intake SHA256.')
         write_json(run / 'plan.json', plan)
+        if args.paragraph_contract is not None:
+            write_json(run / 'paragraph-targets.json', args.paragraph_contract)
         write_json(run / 'request.json', {'sourceSha256': args.source_sha256.lower(), 'dryRun': args.dry_run,
+                                         'paragraphTargetsSha256': digest(run / 'paragraph-targets.json') if args.paragraph_contract is not None else None,
                                          'job': args.job, 'timeoutSeconds': args.timeout})
         command = [sys.executable, __file__, '--worker', '--job', args.job, '--plan', str(run / 'plan.json'),
                    '--source-sha256', args.source_sha256, '--timeout', str(args.timeout)]
         if args.dry_run: command.append('--dry-run')
+        if args.paragraph_contract is not None:
+            command += ['--paragraph-targets', str(run / 'paragraph-targets.json')]
         with (run / 'worker.log').open('a', encoding='utf-8') as log:
             process = subprocess.Popen(command, stdout=log, stderr=log, creationflags=subprocess.CREATE_NO_WINDOW)
             timed_out = False

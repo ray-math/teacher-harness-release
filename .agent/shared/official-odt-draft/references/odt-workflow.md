@@ -12,6 +12,8 @@
 
 ## 실행
 
+아래 설치 기록과 고정 의존성 요구는 `run_odt.py`/`draft_odt.py` 경로에 해당한다. 일반 ODT의 정확한 문구 교체는 아래 [보존 편집](#일반-odt의-보존-편집) 경로를 사용한다.
+
 현재 하네스의 `.agent/index/odt-runtime.json`에서 `pythonPath`와 `dependencyDirectory`를 읽는다. 기록이나 실제 실행기·의존성이 없으면 [INSTALL](../../../../INSTALL.md)의 선택 ODT 설치를 따른다. 전역 Python 별칭이나 예전 설치 컴퓨터의 절대경로를 추정하지 않는다. 설치 기록은 배포 ZIP에 포함되지 않는다. `run_odt.py`는 `--deps`로 받은 고정 의존성의 버전과 실제 import 위치를 검사하며 자동 설치하지 않는다.
 
 `<선택한 기존양식>`은 사용자가 지정한 실제 기존 `.odt` 파일로 바꾼다. 생성기가 양식을 골라 채우도록 이 인수를 생략하지 않는다.
@@ -25,7 +27,35 @@ $odtRuntime = Get-Content -LiteralPath '.agent/index/odt-runtime.json' -Raw -Enc
 
 `--template`이 없으면 입력 JSON을 읽거나 출력 파일을 만들기 전에 종료 코드 2와 `status: needs_input` 및 기존 양식 요청 메시지를 반환한다. 지정 파일이 실제 ODT가 아니거나 지원되는 자리표시자가 없어도 출력 생성 전에 중단한다. 원본과 이미 있는 출력 파일을 덮어쓰지 않는다. 후속 수정은 정확한 현재본을 읽고 요청 범위만 편집한다.
 
-## 내용 입력
+## 일반 ODT의 보존 편집
+
+`scripts/edit_existing_odt.py`는 선택한 기존 `.odt`의 `content.xml`에서 명시 주소의 leaf `text:p`/`text:h` 또는 leaf `text:span` 내부 텍스트만 교체한다. XML을 다시 직렬화하지 않고 선택한 텍스트 바이트만 바꾸므로 나머지 XML, 스타일, 필드, 그림과 패키지 멤버 내용·순서를 보존한다. ZIP은 다시 압축하므로 압축 바이트·플래그 전체의 동일성은 보장하지 않는다. 원본과 기존 출력 파일은 덮어쓰지 않으며 후보를 재열어 검사한 뒤 같은 폴더에 원자적으로 게시한다.
+
+이 실행기는 Python 표준 라이브러리만 사용한다. `odt-runtime.json`의 유효한 `pythonPath` 또는 Codex의 `load_workspace_dependencies`로 확인한 번들 Python 경로를 `$odtPython`에 지정한다. 기록이 없다는 이유로 이 경로에서 설치를 요구하거나 전역 Python 별칭을 추정하지 않는다.
+
+필수 XML·ODF 본문·스타일 루트·manifest 참조·CRC를 검사한다. 기존 파일의 mimetype 위치/압축 방식이 일반 ODT 패키지 규칙과 달라도 원래 배열을 보존하며 영수증 `source_mimetype_conventional:false`로 밝힌다. 이 경우 규격 적합성이나 기안기 호환성을 확인했다고 보고하지 않는다.
+
+```powershell
+& $odtPython '.agent/shared/official-odt-draft/scripts/edit_existing_odt.py' --source '<선택한 현재본>.odt' --inspect
+& $odtPython '.agent/shared/official-odt-draft/scripts/edit_existing_odt.py' --source '<선택한 현재본>.odt' --plan '<선택job>/edits.json' --output '<선택job>/candidate.odt' --receipt '<선택job>/dry-run.json' --dry-run
+& $odtPython '.agent/shared/official-odt-draft/scripts/edit_existing_odt.py' --source '<선택한 현재본>.odt' --plan '<선택job>/edits.json' --output '<선택job>/candidate.odt' --receipt '<선택job>/dry-run.json' --apply
+```
+
+계획 JSON은 `{"source_sha256":"inspect의 해시","edits":[{"node":2,"before":"기존 문구","after":"확인된 새 문구"}]}` 형식이다. `paragraph`는 문단·제목만 센 0 기반 주소이며 `node`는 문단·제목·span을 문서 순서로 센 별도 0 기반 주소다. `--inspect`의 주소와 `editable:true`를 그대로 선택하고 두 주소를 한 편집에 섞지 않는다. 문구 검색만으로 대상 위치를 추정하지 않는다. 동일 문구가 여러 곳에 있어도 주소와 원본 해시로 정확한 대상을 선택한다. 편집 불가 항목의 `text`는 직접 텍스트만 표시하므로 문서 전체 읽기를 대신하지 않는다.
+
+`--inspect`의 각 항목에는 읽기 전용 `context.paragraph`와 `context.cells`가 함께 표시되며, 이는 내용 검증기의 0 기반 문단·표/행/열 locator와 일치하고 중첩 표의 조상 셀 및 반복 행·셀의 모든 논리 좌표를 포함하되 표당 10,000개 좌표 초과·잘못된 반복 수·미지원 행 구조에서는 `cell_context_status: unsupported`로 명시하므로 의미에 맞는 수정 위치는 문서와 대조해 선택한다.
+
+비슷한 이름의 항목이 여러 위치에 있으면 각 라벨과 인접 값칸을 함께 읽어 용도를 구분한다. 초안에서는 편집 계획의 대상 주소를 재사용하여 저장본의 핵심값과 인접 라벨을 확인한다. 별도 내용 계약은 명시적으로 엄격검증을 요청한 경우에만 만들며, 그때 값칸과 보존할 라벨을 함께 기록한다.
+
+원본 SHA256, 정확한 before, 중복 주소·다른 주소로 같은 범위 선택, dry-run의 계획·출력 경로 일치를 검사한다. dry-run은 ODT를 생성하지 않고 새 영수증만 저장하며 기존 영수증도 덮어쓰지 않는다. 계획을 바꾸면 새 영수증으로 dry-run을 다시 한다. 영수증은 검증 기록이며 사용자 승인이나 내용의 사실 확인을 대신하지 않는다.
+
+복합 문단 전체는 평탄화하지 않는다. `node` 전체 교체는 leaf span에만 가능하다. bookmark·text:s·탭·중첩 span이 섞인 문단은 `--inspect`의 `segments`에서 직접 텍스트 조각을 선택하고 `{"segment":12,"before":"기존 문구","after":"새 문구"}`로 지정한다. segment는 문단/제목/span 안의 연속된 XML 문자 데이터(text 또는 자식 뒤 tail)를 센 별도 0 기반 주소이며 함께 표시되는 `node`는 상위 문단/span 주소다. 필드·공백 요소·bookmark 자체는 바꾸지 않고 해당 텍스트 바이트만 바꾼다. 서로 다른 주소 방식으로 겹치는 범위를 선택하면 거부한다. segment의 기존 앞뒤 일반 공백은 개수를 그대로 유지할 때 허용한다. `after:""`로 옛 시행번호·직책 등의 글자만 비울 수 있으며 둘러싼 요소와 누름틀은 보존한다. 같은 계획의 모든 주소는 편집 전 원본을 기준으로 하고, 저장 후 추가 편집은 다시 inspect한다. 내부 반복 공백 추가, 새 줄바꿈, CDATA 내용 변경은 지원하지 않는다.
+
+빈 self-closing 요소, UTF-8 이외 XML, 서명·암호화·중복 ZIP 멤버도 거부한다. 문단 추가·표 구조 변경·HWPX 편집에는 사용하지 않는다. 실제 화면·줄 넘침·기안기 호환성은 이 파일 검사로 확인되지 않는다.
+
+표준 라이브러리 회귀 검사는 같은 Python으로 `-B -m unittest discover -s .agent/shared/official-odt-draft/scripts -p test_edit_existing_odt.py -v`를 실행한다. 합성 자료는 시스템 TEMP에만 만든다.
+
+## 자리표시자 내용 입력
 
 JSON 예(가상 내용):
 

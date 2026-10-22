@@ -17,9 +17,32 @@ function Get-HumanDeliveryContext {
     if (-not $work.deliveryCycle -or ($cycle | ConvertTo-Json -Depth 12 -Compress) -cne ($work.deliveryCycle | ConvertTo-Json -Depth 12 -Compress)) {
         throw 'Delivery cycle is stale or disagrees between job and current work. Intake the current user request.'
     }
+    $intakePath = Join-Path $info.jobRoot 'wip/receipts/work-intake.json'
+    $intake = if (Test-Path -LiteralPath $intakePath -PathType Leaf) { Get-Content -LiteralPath $intakePath -Raw -Encoding utf8 | ConvertFrom-Json } else { $null }
+    $profile = $inputs.requiredContentProfile
+    if ($profile -or $cycle.requiredContentProfile -or $intake.requiredContentProfile) {
+        if (-not $profile -or -not $cycle.requireContentValidation -or -not $cycle.requiredContentProfile -or -not $intake.requiredContentProfile -or $intake.deliveryCycle.id -cne $cycle.id) { throw 'Required content profile binding is missing or inconsistent.' }
+        foreach ($binding in @($cycle.requiredContentProfile,$intake.requiredContentProfile)) {
+            if ($binding.path -ine $profile.path -or $binding.sha256 -ine $profile.sha256) { throw 'Required content profile binding changed after intake.' }
+        }
+        if (-not (Test-Path -LiteralPath $profile.path -PathType Leaf) -or (Get-FileHash -LiteralPath $profile.path -Algorithm SHA256).Hash -ine $profile.sha256) { throw 'Required content profile is missing or its hash changed.' }
+    }
     $basis = Assert-WorkDocumentBasis -Inputs $inputs -WorkRoot $info.workRoot
     $scope = Get-ActiveDocumentScope $info.jobRoot
     [pscustomobject]@{jobPath=$info.jobRoot;workRoot=$info.workRoot;cycle=$cycle;scope=$scope;basis=$basis}
+}
+
+function Assert-HumanDeliveryStage {
+    param($Context, [string]$Stage)
+    if ($Context.cycle.draftFirst -and $Stage -ne 'Review') { throw 'DraftFirst can only be saved at Review stage. Start a new request for final completion.' }
+}
+
+function Assert-HumanContentValidation {
+    param($Context, $Files)
+    if (-not $Context.cycle.requireContentValidation) { return $null }
+    $helper = Join-Path $PSScriptRoot 'Assert-ContentValidation.ps1'
+    if (-not (Test-Path -LiteralPath $helper -PathType Leaf)) { throw 'Required saved-content validator is missing.' }
+    & $helper -JobPath $Context.jobPath -Files $Files
 }
 
 function Get-HumanDeliveryFiles {
@@ -34,8 +57,9 @@ function Get-HumanDeliveryFiles {
         if (-not $withinWip -or -not (Test-Path -LiteralPath $source -PathType Leaf)) {
             throw "Completion source must be a file in this job's wip/docs or wip/carry: $source"
         }
-        $target = Get-WorkCurrentTarget -WorkRoot $Context.workRoot -RelativePath $TargetRelativePath[$i]
-        $relative = $target.Substring($Context.workRoot.TrimEnd('\').Length + 1)
+        $deliveryName = Resolve-WorkDeliveryName -WorkRoot $Context.workRoot -RelativePath $TargetRelativePath[$i]
+        $target = Get-WorkCurrentTarget -WorkRoot $Context.workRoot -RelativePath $deliveryName
+        $relative = $target.Substring((Get-WorkCurrentRoot $Context.workRoot).TrimEnd('\').Length + 1)
         if ($relative -match '(?i)_fix\d+(?:_|\.|$)') { throw 'Completion cannot target a fix/recovery version.' }
         if ($targets.ContainsKey($relative)) { throw "Duplicate completion target: $relative" }
         $targets[$relative] = $true
@@ -56,6 +80,7 @@ function Assert-HumanDeliveryChecks([string[]]$ChecksCompleted) {
 function Assert-HumanDeliveryReady {
     param([string]$JobPath, [string[]]$SourceFile, [string[]]$TargetRelativePath, [ValidateSet('Review','Final')][string]$Stage, [string]$DeliveryConfigPath='')
     $context = Get-HumanDeliveryContext -JobPath $JobPath -DeliveryConfigPath $DeliveryConfigPath
+    Assert-HumanDeliveryStage -Context $context -Stage $Stage
     $files = @(Get-HumanDeliveryFiles -Context $context -SourceFile $SourceFile -TargetRelativePath $TargetRelativePath)
     $receiptPath = Assert-WorkStoragePath (Join-Path $context.jobPath 'wip\receipts\human-delivery-ready.json')
     if (-not (Test-Path -LiteralPath $receiptPath -PathType Leaf)) { throw 'Publication requires Complete-HumanDraft for the finished WIP files.' }
@@ -75,6 +100,10 @@ function Assert-HumanDeliveryReady {
         $path = Assert-WorkStoragePath ([string]$check.path)
         if (-not $path.StartsWith((Join-Path $context.jobPath 'wip\receipts') + '\', [StringComparison]::OrdinalIgnoreCase)) { throw 'Completion check receipts must stay in this job receipts tree.' }
         if (-not (Test-Path -LiteralPath $path -PathType Leaf) -or (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash -ine $check.sha256) { throw 'A completion check receipt changed or is missing.' }
+    }
+    $contentReceipt = Assert-HumanContentValidation -Context $context -Files $files
+    if ($context.cycle.requireContentValidation -and ($receipt.contentValidation.path -ine $contentReceipt.path -or $receipt.contentValidation.sha256 -ine $contentReceipt.sha256)) {
+        throw 'Required content validation changed or was not bound at completion.'
     }
     $receipt
 }

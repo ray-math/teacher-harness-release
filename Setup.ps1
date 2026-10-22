@@ -63,6 +63,7 @@ function Get-SetupState {
         ConfigPath = $configPath
         HumanCabinet = $config.humanCabinet
         HumanCabinetExists = [bool](Test-Path -LiteralPath $config.humanCabinet -PathType Container)
+        ReceiveInputs = $config.receiveInputs
         IncomingRoot = $config.incomingRoot
         IncomingRootExists = [bool](Test-Path -LiteralPath $config.incomingRoot -PathType Container)
         RuntimeDirectory = $runtimeDirectory
@@ -86,7 +87,9 @@ if ($CheckOnly) {
     return
 }
 
-foreach ($folder in @([string]$config.humanCabinet, [string]$config.incomingRoot)) {
+$folders = @([string]$config.humanCabinet)
+if ($config.receiveInputs) { $folders += [string]$config.incomingRoot }
+foreach ($folder in $folders) {
     New-Item -ItemType Directory -Path $folder -Force | Out-Null
 }
 $utf8Bom = New-Object System.Text.UTF8Encoding($true)

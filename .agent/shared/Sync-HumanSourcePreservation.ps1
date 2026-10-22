@@ -13,8 +13,9 @@ if (Test-Path -LiteralPath $pathResolver) {
     . $pathResolver
     $config = Resolve-TeacherHarnessConfig -Workspace $workspace -Config $config
 } elseif (-not [IO.Path]::IsPathRooted([string]$config.humanCabinet)) { throw 'Relative delivery paths require Resolve-TeacherHarnessConfig.ps1.' }
+. (Join-Path $PSScriptRoot 'WorkStorage.ps1')
 $root = [IO.Path]::GetFullPath($WorkFolder).TrimEnd('\')
-if ([IO.Path]::GetDirectoryName($root) -ine [IO.Path]::GetFullPath($config.humanCabinet).TrimEnd('\')) { throw 'Preservation requires a direct child of the human cabinet.' }
+if ([IO.Path]::GetDirectoryName($root) -ine (Get-WorkContainerRoot $config) -and [IO.Path]::GetDirectoryName($root) -ine [IO.Path]::GetFullPath([string]$config.humanCabinet).TrimEnd('\')) { throw 'Preservation requires a direct child of the human cabinet.' }
 $history = Join-Path $root $config.archiveFolderName
 $metadata = Join-Path $root $config.metadataFolderName
 $originals = Join-Path $metadata 'originals'

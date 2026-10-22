@@ -4,8 +4,8 @@ $ErrorActionPreference = 'Stop'
 if ([string]::IsNullOrWhiteSpace($Workspace)) { $Workspace = Join-Path $PSScriptRoot '..\..' }
 $workspaceRoot = [IO.Path]::GetFullPath($Workspace)
 $receiver = Join-Path $workspaceRoot '.agent\shared\Receive-TeacherHarnessInputs.ps1'
-$qaRoot = Join-Path ([IO.Path]::GetDirectoryName($workspaceRoot)) 'HarnessQA'
-$testRoot = Join-Path $qaRoot ('teacher-inputs-' + [guid]::NewGuid().ToString('N'))
+$qaRoot = [IO.Path]::GetTempPath().TrimEnd('\')
+$testRoot = Join-Path $qaRoot ('thi-' + [guid]::NewGuid().ToString('N'))
 $testWorkspace = Join-Path $testRoot '하네스'
 $incomingRoot = Join-Path $testRoot '받은 자료'
 $sourceRoot = Join-Path $testRoot '원본 자료'
@@ -31,10 +31,30 @@ function Invoke-InputReceive {
     return (& $receiver -SourceFile $Paths -Workspace $testWorkspace -ConfigPath $Config | Out-String | ConvertFrom-Json)
 }
 function Assert-InputRejected {
-    param([string[]]$Paths, [string]$Config, [string]$Message)
+    param([string[]]$Paths, [string]$Config, [string]$Message, [string]$Pattern = '')
     $failed = $false
-    try { $null = Invoke-InputReceive -Paths $Paths -Config $Config } catch { $failed = $true }
+    try { $null = Invoke-InputReceive -Paths $Paths -Config $Config }
+    catch {
+        if ($Pattern -and $_.Exception.Message -notmatch $Pattern) { throw }
+        $failed = $true
+    }
     Assert-InputTest -Condition $failed -Message $Message
+}
+function New-InputLengthPath {
+    param([string]$Prefix, [int]$Length)
+    $padding = $Length - $testRoot.Length - 1 - $Prefix.Length
+    if ($padding -lt 1) { throw 'TEMP is too long for the path-boundary fixture.' }
+    return Join-Path $testRoot ($Prefix + ('x' * $padding))
+}
+function Get-InputTreeState {
+    param([string]$Path)
+    @((Get-Item -Force -LiteralPath $Path)) + @(Get-ChildItem -Force -Recurse -LiteralPath $Path) |
+        Sort-Object FullName | ForEach-Object {
+            # Directory enumeration can return cached timestamps from before a
+            # child handle closed; read current metadata for stable snapshots.
+            $_.Refresh()
+            [ordered]@{ path = $_.FullName; directory = $_.PSIsContainer; writeTicks = $_.LastWriteTimeUtc.Ticks; hash = $(if (-not $_.PSIsContainer) { Get-InputFixtureHash -Path $_.FullName }) }
+        } | ConvertTo-Json -Depth 4 -Compress
 }
 
 try {
@@ -50,6 +70,36 @@ try {
     $originalHashes = @{}
     foreach ($path in @($first, $identical, $different)) { $originalHashes[$path] = Get-InputFixtureHash -Path $path }
 
+    $referenceRoot = Join-Path $testRoot 'Output'
+    Write-InputFixture -Path (Join-Path $testWorkspace 'reference-settings.json') -Text (@{humanCabinet=$referenceRoot;incomingRoot=(Join-Path $referenceRoot '.ai\inputs');receiveInputs=$false} | ConvertTo-Json)
+    $sourceBefore = Get-InputTreeState -Path $sourceRoot
+    $referenced = Invoke-InputReceive -Paths @($first,$identical,$different) -Config 'reference-settings.json'
+    Assert-InputTest -Condition ($referenced.status -eq 'referenced' -and $referenced.receiptPath -eq '' -and -not $referenced.receiptReused) -Message 'Reference mode reports references without claiming a stored receipt'
+    Assert-InputTest -Condition (@($referenced.files).Count -eq 3) -Message 'Reference mode retains all source mappings'
+    foreach ($file in $referenced.files) {
+        Assert-InputTest -Condition ($file.status -eq 'referenced' -and $file.sourcePath -eq $file.receivedPath -and $file.sha256 -eq $originalHashes[$file.sourcePath]) -Message 'Reference mapping retains source location and verified hash'
+    }
+    $referencedAgain = Invoke-InputReceive -Paths @($first,$identical,$different) -Config 'reference-settings.json'
+    Assert-InputTest -Condition ($referenced.inputFingerprint -eq $referencedAgain.inputFingerprint) -Message 'Reference fingerprints are stable on repeated reads'
+    Assert-InputRejected -Paths @($first,(Join-Path $sourceRoot 'missing.txt')) -Config 'reference-settings.json' -Message 'Reference mode rejects missing sources'
+    Assert-InputTest -Condition (-not (Test-Path -LiteralPath $referenceRoot)) -Message 'Reference mode creates no output, received-data, or receipt directories'
+    Assert-InputTest -Condition ((Get-InputTreeState -Path $sourceRoot) -ceq $sourceBefore) -Message 'Reference reads preserve source bytes and modification timestamps'
+    Write-InputFixture -Path (Join-Path $testWorkspace 'bad-flag.json') -Text '{"humanCabinet":"../Output","incomingRoot":"../inputs","receiveInputs":"false"}'
+    Assert-InputRejected -Paths @($first) -Config 'bad-flag.json' -Pattern 'JSON boolean' -Message 'A string receiveInputs flag cannot silently enable copying'
+
+    # Run setup only in a disposable harness with synthetic configuration.
+    $setupWorkspace = Join-Path $testRoot 'setup-fixture'
+    Write-InputFixture -Path (Join-Path $setupWorkspace '.agent/index/delivery-system.json') -Text '{"humanCabinet":"Output","incomingRoot":"Output/.ai/inputs","receiveInputs":false,"outputLayout":"flat"}'
+    Write-InputFixture -Path (Join-Path $setupWorkspace '.agent/index/hwpx-runtime.json') -Text '{"runtimeDirectory":"runtime","versions":{}}'
+    $null = [IO.Directory]::CreateDirectory((Join-Path $setupWorkspace '.agent/shared'))
+    Copy-Item -LiteralPath (Join-Path $workspaceRoot 'Setup.ps1') -Destination (Join-Path $setupWorkspace 'Setup.ps1')
+    Copy-Item -LiteralPath (Join-Path $workspaceRoot '.agent/shared/Resolve-TeacherHarnessConfig.ps1') -Destination (Join-Path $setupWorkspace '.agent/shared/Resolve-TeacherHarnessConfig.ps1')
+    $null = & (Join-Path $setupWorkspace 'Setup.ps1') -CheckOnly
+    Assert-InputTest -Condition (-not (Test-Path -LiteralPath (Join-Path $setupWorkspace 'Output'))) -Message 'Setup CheckOnly with references creates no folders'
+    $null = & (Join-Path $setupWorkspace 'Setup.ps1')
+    $savedConfig = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $setupWorkspace '.agent/index/delivery-system.json') | ConvertFrom-Json
+    Assert-InputTest -Condition ($savedConfig.receiveInputs -eq $false -and $savedConfig.outputLayout -eq 'flat') -Message 'Setup preserves reference and flat-layout configuration'
+    Assert-InputTest -Condition ((Test-Path -LiteralPath (Join-Path $setupWorkspace 'Output')) -and -not (Test-Path -LiteralPath (Join-Path $setupWorkspace 'Output/.ai'))) -Message 'Setup creates only the output root when receipt copying is disabled'
     Push-Location 'D:\'
     try { $result = Invoke-InputReceive -Paths @($first, $identical, $different) } finally { Pop-Location }
     Assert-InputTest -Condition ($result.status -eq 'received' -and @($result.files).Count -eq 3) -Message 'JSON status and three input mappings'
@@ -91,6 +141,40 @@ try {
     try { Assert-InputRejected -Paths @($first, $locked) -Config 'invalid-settings.json' -Message 'Unreadable locked input is rejected during preflight' } finally { $lock.Dispose() }
     Assert-InputTest -Condition (-not (Test-Path -LiteralPath $invalidIncoming)) -Message 'Unreadable input causes no writes'
 
+    # Ordinary PS5.1 paths must work up to the documented transaction limit.
+    # Receipt paths grow much longer than incomingRoot; no actual long path needs
+    # to be created to prove that an unsupported batch rejects before any writes.
+    $receiptTail = '\.ai\input-receipts\' + ('0' * 64) + '.json'
+    $boundaryIncoming = New-InputLengthPath -Prefix 'boundary-' -Length (259 - $receiptTail.Length)
+    $boundaryConfig = Join-Path $testWorkspace 'boundary-settings.json'
+    Write-InputFixture -Path $boundaryConfig -Text (@{ humanCabinet = '../업무'; incomingRoot = $boundaryIncoming } | ConvertTo-Json)
+    $boundaryResult = Invoke-InputReceive -Paths @($first) -Config 'boundary-settings.json'
+    Assert-InputTest -Condition ($boundaryResult.receiptPath.Length -eq 259 -and (Test-Path -LiteralPath $boundaryResult.receiptPath -PathType Leaf)) -Message 'A 259-character final receipt path is supported'
+    Assert-InputTest -Condition ((Get-InputFixtureHash -Path $first) -eq $originalHashes[$first]) -Message 'Boundary-length receipt preserves the source'
+
+    $missingLongIncoming = New-InputLengthPath -Prefix 'missing-' -Length (260 - $receiptTail.Length)
+    Write-InputFixture -Path (Join-Path $testWorkspace 'missing-long-settings.json') -Text (@{ humanCabinet = '../업무'; incomingRoot = $missingLongIncoming } | ConvertTo-Json)
+    Assert-InputRejected -Paths @($first, $different) -Config 'missing-long-settings.json' -Pattern 'Unsupported receive path length: File path has 260 characters' -Message 'A 260-character final receipt path is clearly rejected during preflight'
+    Assert-InputTest -Condition (-not (Test-Path -LiteralPath $missingLongIncoming)) -Message 'Overlong receipt creates no incoming directory, copies, or receipt'
+
+    $existingLongIncoming = New-InputLengthPath -Prefix 'existing-' -Length (260 - $receiptTail.Length)
+    Write-InputFixture -Path (Join-Path $existingLongIncoming 'keep.txt') -Text 'pre-existing received content'
+    Write-InputFixture -Path (Join-Path $existingLongIncoming '.ai\input-receipts\keep.json') -Text 'pre-existing receipt bytes'
+    Write-InputFixture -Path (Join-Path $testWorkspace 'existing-long-settings.json') -Text (@{ humanCabinet = '../업무'; incomingRoot = $existingLongIncoming } | ConvertTo-Json)
+    $existingLongBefore = Get-InputTreeState -Path $existingLongIncoming
+    Assert-InputRejected -Paths @($first, $different) -Config 'existing-long-settings.json' -Pattern 'Unsupported receive path length' -Message 'Overlong receipt is rejected for an existing incoming root'
+    Assert-InputTest -Condition ((Get-InputTreeState -Path $existingLongIncoming) -ceq $existingLongBefore) -Message 'Overlong receipt leaves existing copies, receipts, directories, and timestamps unchanged'
+
+    $collisionLeaf = ('c' * 72) + '.txt'
+    $collisionSource = Join-Path $sourceRoot $collisionLeaf
+    Write-InputFixture -Path $collisionSource -Text 'new collision bytes'
+    Write-InputFixture -Path (Join-Path $boundaryIncoming $collisionLeaf) -Text 'existing collision bytes'
+    $collisionHash = Get-InputFixtureHash -Path $collisionSource
+    $boundaryBefore = Get-InputTreeState -Path $boundaryIncoming
+    Assert-InputRejected -Paths @($different, $collisionSource) -Config 'boundary-settings.json' -Pattern 'Unsupported receive path length' -Message 'A collision hash suffix exceeding the path limit rejects the entire batch before copying'
+    Assert-InputTest -Condition ((Get-InputTreeState -Path $boundaryIncoming) -ceq $boundaryBefore) -Message 'Overlong collision suffix preserves all existing incoming data and receipt timestamps'
+    Assert-InputTest -Condition ((Get-InputFixtureHash -Path $collisionSource) -eq $collisionHash -and (Get-InputFixtureHash -Path $different) -eq $originalHashes[$different]) -Message 'Rejected long-path batch preserves every source'
+
     $junction = Join-Path $testRoot 'source-junction'
     $null = New-Item -Path $junction -ItemType Junction -Value $sourceRoot
     Assert-InputRejected -Paths @((Join-Path $junction 'A\한글 자료.txt')) -Config 'invalid-settings.json' -Message 'Reparse-point source ancestor is rejected'
@@ -130,7 +214,7 @@ finally {
     if ($null -ne $junction -and [IO.Directory]::Exists($junction)) { [IO.Directory]::Delete($junction, $false) }
     $resolvedTestRoot = [IO.Path]::GetFullPath($testRoot)
     if (-not $resolvedTestRoot.StartsWith($qaRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
-        throw 'Refusing fixture cleanup outside HarnessQA.'
+        throw 'Refusing fixture cleanup outside TEMP.'
     }
     if (Test-Path -LiteralPath $resolvedTestRoot) {
         $items = @((Get-Item -Force -LiteralPath $resolvedTestRoot)) + @(Get-ChildItem -Force -Recurse -LiteralPath $resolvedTestRoot)

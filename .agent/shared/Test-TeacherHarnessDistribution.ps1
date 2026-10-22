@@ -37,6 +37,7 @@ try {
     $config = Get-Content -LiteralPath (Join-Path $workspace '.agent\index\delivery-system.json') -Raw -Encoding UTF8 | ConvertFrom-Json
     $config.humanCabinet = '../업무'
     $config.incomingRoot = '../받은자료'
+    $config.PSObject.Properties.Remove('pathBase')
     $configPath = Join-Path $index 'delivery-system.json'
     $config | ConvertTo-Json -Depth 100 | Set-Content -LiteralPath $configPath -Encoding UTF8
     $configBefore = (Get-FileHash -LiteralPath $configPath).Hash

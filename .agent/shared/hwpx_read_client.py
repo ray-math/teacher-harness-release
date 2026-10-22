@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import sys
+import subprocess
 
 sys.dont_write_bytecode = True
 
@@ -17,10 +18,19 @@ READ_TOOLS = frozenset({"get_document_text", "get_document_outline", "get_table_
 
 def server_parameters():
     spec = json.loads((ROOT / '.agent/index/hwpx-runtime.json').read_text(encoding='utf-8-sig'))
-    delivery = json.loads((ROOT / '.agent/index/delivery-system.json').read_text(encoding='utf-8-sig'))
-    for key in ('humanCabinet', 'incomingRoot'):
-        directory = Path(delivery[key])
-        delivery[key] = str((ROOT / directory).resolve() if not directory.is_absolute() else directory)
+    # Share the Windows path policy with intake, including redirected Desktops.
+    quote = lambda value: "'" + str(value).replace("'", "''") + "'"
+    resolver = ROOT / '.agent/shared/Resolve-TeacherHarnessConfig.ps1'
+    command = ("[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); . "
+               + quote(resolver) + "; Read-TeacherHarnessConfig -Workspace "
+               + quote(ROOT) + " | ConvertTo-Json -Compress")
+    result = subprocess.run(
+        ['powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', command],
+        capture_output=True, encoding='utf-8-sig', errors='replace', timeout=30,
+        creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
+    if result.returncode:
+        raise ValueError('Delivery path resolution failed: ' + result.stderr.strip())
+    delivery = json.loads(result.stdout)
     runtime = (ROOT / spec['runtimeDirectory']).resolve()
     if not runtime.is_relative_to(ROOT):
         raise ValueError('Runtime escaped workspace')

@@ -42,6 +42,9 @@ param(
     [string]$LayoutReason = '',
     [switch]$Collection,
     [switch]$SelectedFilesOnly,
+    [switch]$DraftFirst,
+    [switch]$RequireContentValidation,
+    [string]$ContentProfilePath = '',
     [switch]$FinalPolishAuthorized,
     [switch]$VisualReviewAuthorized,
     [string]$FormattingRequestText = '',
@@ -60,6 +63,7 @@ if ($VisualReviewAuthorized) { Assert-ExplicitDocumentRequest $VisualReviewReque
 if ($RevokeDocumentScope -and ($FinalPolishAuthorized -or $VisualReviewAuthorized -or $FormattingRequestText -or $VisualReviewRequestText)) { throw 'Scope revocation cannot be combined with scope expansion.' }
 if ($FormattingRequestText -and -not $FinalPolishAuthorized) { throw 'FormattingRequestText requires FinalPolishAuthorized.' }
 if ($VisualReviewRequestText -and -not $VisualReviewAuthorized) { throw 'VisualReviewRequestText requires VisualReviewAuthorized.' }
+if ($DraftFirst -and ($RequireContentValidation -or $ContentProfilePath)) { throw 'DraftFirst cannot be combined with required content validation or a content profile.' }
 $intakeWatch = [Diagnostics.Stopwatch]::StartNew()
 function Write-IntakeResponse($Receipt) {
     if (-not $Summary) { $Receipt | ConvertTo-Json -Depth 8; return }
@@ -69,6 +73,8 @@ function Write-IntakeResponse($Receipt) {
         jobPath=$Receipt.jobPath; workingDocuments=$Receipt.workingDocuments
         sourcesRegistered=$Receipt.sourcesRegistered; editingMode=$Receipt.editingMode
         finalPolishAuthorized=[bool]$Receipt.finalPolishAuthorized
+        draftFirst=[bool]$Receipt.deliveryCycle.draftFirst
+        requiredContentProfile=$Receipt.requiredContentProfile
         deliveryCycleId=$Receipt.deliveryCycle.id
         receiptPath=(Join-Path $Receipt.jobPath 'wip/receipts/work-intake.json')
         elapsedSeconds=[Math]::Round($intakeWatch.Elapsed.TotalSeconds,3)
@@ -165,7 +171,7 @@ function Write-JsonAtomic([string]$Path, [object]$Value, [int]$Depth = 12) {
 
 $safeTitle = Get-SafeName $TaskTitle
 if ([string]::IsNullOrWhiteSpace($safeTitle)) { throw 'TaskTitle did not contain a usable name.' }
-if (-not $WorkFolderName -and (Test-WorkFolderName $safeTitle)) {
+if (-not $WorkFolderName -and $safeTitle -match '^(?:\d{8}|\d{2}(?:-\d{2})*)_.+' -and (Test-WorkFolderName $safeTitle)) {
     $WorkFolderName = $safeTitle
     $safeTitle = $safeTitle -replace '^(?:\d{8}|\d{2}(?:-\d{2})*)_', ''
 }
@@ -174,7 +180,7 @@ if ($Mode -eq 'New' -and [string]::IsNullOrWhiteSpace($WorkFolderName)) {
     $existingMatches = @($registry.works | Where-Object title -eq $safeTitle)
     if ($existingMatches.Count -gt 1) { throw 'More than one registered work matches. Pass WorkFolderName explicitly.' }
     if ($existingMatches.Count -eq 1) { $Mode = 'FollowUp'; $WorkFolderName = [string]$existingMatches[0].folderName }
-    else { throw 'New work needs an explicit numbered WorkFolderName from the selected workflow (for example 23_Second exam). No date or classification number is assigned automatically.' }
+    else { $WorkFolderName = $safeTitle }
 }
 if ($Mode -eq 'FollowUp') {
     $matches = if ($WorkFolderName) { @($registry.works | Where-Object folderName -eq $WorkFolderName) } else { @($registry.works | Where-Object title -eq $safeTitle) }
@@ -186,7 +192,9 @@ if ($Mode -eq 'FollowUp') {
 }
 
 if (-not (Test-WorkFolderName $WorkFolderName)) { throw "Invalid work-folder name: $WorkFolderName" }
-$workRoot = [IO.Path]::GetFullPath((Join-Path $cabinet $WorkFolderName))
+$workRoot = [IO.Path]::GetFullPath((Join-Path (Get-WorkContainerRoot $config) $WorkFolderName))
+if ($entry -and $entry.workRoot) { $workRoot = [string]$entry.workRoot }
+$currentRoot = Get-WorkCurrentRoot $workRoot
 if (-not $workRoot.StartsWith($cabinetPrefix, [StringComparison]::OrdinalIgnoreCase)) { throw "Work target escaped the human cabinet: $workRoot" }
 $existingNewFolder = $Mode -eq 'New' -and (Test-Path -LiteralPath $workRoot)
 $existingWorkMetadataPath = Join-Path (Join-Path $workRoot ([string]$config.metadataFolderName)) ([string]$config.workMetadataName)
@@ -196,18 +204,19 @@ if ($Mode -eq 'FollowUp' -and -not (Test-Path -LiteralPath $workRoot -PathType C
 if ($Mode -eq 'FollowUp') {
     $registeredNames = @($entry.files | Where-Object { $_ } | Select-Object -Unique)
     $actualNames = @(
-        Get-ChildItem -LiteralPath $workRoot -File -Force |
+        Get-ChildItem -LiteralPath $currentRoot -File -Force |
             Where-Object { $_.Name -ne [string]$config.consoleFileName } |
             ForEach-Object Name
     )
-    $unexpected = @($actualNames | Where-Object { $registeredNames -notcontains $_ -and $registeredRevisionNames -notcontains $_ })
-    $missing = @($registeredNames | Where-Object { -not (Test-Path -LiteralPath (Join-Path $workRoot $_) -PathType Leaf) })
+    $unexpected = @( $(if ($currentRoot -ine $workRoot) { @() } else { $actualNames }) | Where-Object { $registeredNames -notcontains $_ -and $registeredRevisionNames -notcontains $_ })
+    $missing = @($registeredNames | Where-Object { -not (Test-Path -LiteralPath (Join-Path $currentRoot $_) -PathType Leaf) })
     if ($unexpected.Count -gt 0) { throw "Unregistered human-facing file(s) must be reconciled before follow-up: $($unexpected -join ', ')" }
     if ($missing.Count -gt 0) { throw "Registered current file(s) are missing before follow-up: $($missing -join ', ')" }
 }
 
 $metadataRoot = Join-Path $workRoot ([string]$config.metadataFolderName)
 function Hide-WorkMetadata {
+    if ($config.outputLayout -eq 'flat') { $hiddenRoot = Join-Path $cabinet '.ai'; if(Test-Path -LiteralPath $hiddenRoot) { [IO.File]::SetAttributes($hiddenRoot,([IO.File]::GetAttributes($hiddenRoot) -bor [IO.FileAttributes]::Hidden)) } }
     if(Test-Path -LiteralPath $metadataRoot -PathType Container){
         $attributes=[IO.File]::GetAttributes($metadataRoot)
         if($attributes -band [IO.FileAttributes]::ReparsePoint){throw 'Metadata folder must not be a reparse point.'}
@@ -249,7 +258,7 @@ $autoHumanRevisions = [Collections.Generic.List[object]]::new()
 if ($SelectedFilesOnly -and ($Mode -ne 'FollowUp' -or $HumanRevisionFile.Count -eq 0)) { throw 'SelectedFilesOnly requires FollowUp and explicit HumanRevisionFile targets.' }
 if ($Mode -eq 'FollowUp') {
     foreach ($name in @($entry.files | Where-Object { $_ } | Select-Object -Unique)) {
-        $currentPath = Join-Path $workRoot ([string]$name)
+        $currentPath = Join-Path $currentRoot ([string]$name)
         if ($SelectedFilesOnly -and @($allItems | Where-Object { $_.role -eq 'human_revision' -and $_.path -ieq $currentPath }).Count -eq 0) { continue }
         if (-not (Test-Path -LiteralPath $currentPath -PathType Leaf)) { continue }
         try { $currentHash = (Get-FileHash -LiteralPath $currentPath -Algorithm SHA256).Hash }
@@ -284,7 +293,7 @@ if (-not $PlanOnly -and $provided.Count -gt 0) {
 }
 $basisSources = @($allItems | Where-Object { $_.role -in @('form','human_revision') })
 if ($Purpose -eq 'Document' -and $basisSources.Count -eq 0) {
-    throw 'needs_input: Existing draft or form required. Stop authoring and ask the user to provide or select one. Received materials remain saved.'
+    throw 'needs_input: Existing draft or form required. Stop authoring and ask the user to provide or select one. Provided originals remain unchanged.'
 }
 
 
@@ -324,6 +333,52 @@ if ($RequestId -and $priorDeliveryCycle -and $priorDeliveryCycle.requestKey -ceq
 $newExplicitRequest = ($RequestText -or $RequestId) -and $priorDeliveryCycle -and $priorDeliveryCycle.requestKey -cne $deliveryRequestKey
 $deliveryCycle = if ($priorDeliveryCycle -and $priorDeliveryCycle.requestKey -ceq $deliveryRequestKey) { $priorDeliveryCycle } else {
     [ordered]@{schemaVersion='human-delivery-cycle/v1';id=[guid]::NewGuid().ToString('D');requestKey=$deliveryRequestKey;requestText=$deliveryRequestText;startedAt=(Get-Date -Format 'o')}
+}
+# Draft-first is explicit and never removes an existing job's required checks.
+if ($DraftFirst) {
+    if ($priorDeliveryCycle.requireContentValidation -or $existingInputs.requiredContentProfile) { throw 'DraftFirst cannot weaken an existing required validation job. Use a new JobSlug for the draft.' }
+    if ($priorDeliveryCycle -and $priorDeliveryCycle.requestKey -ceq $deliveryRequestKey -and -not $priorDeliveryCycle.draftFirst) { throw 'DraftFirst requires a new request or job; it cannot change an active delivery cycle.' }
+    if ($deliveryCycle -is [Collections.IDictionary]) { $deliveryCycle['draftFirst'] = $true }
+    else { $deliveryCycle | Add-Member -NotePropertyName draftFirst -NotePropertyValue $true -Force }
+}
+if ($deliveryCycle.draftFirst -and ($RequireContentValidation -or $ContentProfilePath)) { throw 'DraftFirst cycle cannot require content validation. Start a new request for final completion.' }
+# A selected requirements profile is task data, pinned independently of the
+# model-authored content contract. Retries cannot silently drop or replace it.
+$requiredContentProfile = $null
+$priorProfile = if ($existingInputs) { $existingInputs.requiredContentProfile } else { $null }
+$priorIntakePath = Join-Path $resolvedJob 'wip/receipts/work-intake.json'
+if (Test-Path -LiteralPath $priorIntakePath -PathType Leaf) {
+    $priorIntakeProfileReceipt = Get-Content -LiteralPath $priorIntakePath -Raw -Encoding utf8 | ConvertFrom-Json
+    if ($priorIntakeProfileReceipt.requiredContentProfile -and (-not $priorProfile -or $priorProfile.path -ine $priorIntakeProfileReceipt.requiredContentProfile.path -or $priorProfile.sha256 -ine $priorIntakeProfileReceipt.requiredContentProfile.sha256)) {
+        throw 'Required content profile binding changed or was removed from intake.'
+    }
+}
+if ($ContentProfilePath) {
+    $profileResolved = [IO.Path]::GetFullPath((Resolve-Path -LiteralPath $ContentProfilePath).Path)
+    if (-not (Test-Path -LiteralPath $profileResolved -PathType Leaf)) { throw 'ContentProfilePath must name an existing profile file.' }
+    $requiredContentProfile = [ordered]@{path=$profileResolved;sha256=(Get-FileHash -LiteralPath $profileResolved -Algorithm SHA256).Hash.ToLowerInvariant()}
+    if ($priorProfile -and -not $newExplicitRequest -and ($priorProfile.path -ine $profileResolved -or $priorProfile.sha256 -ine $requiredContentProfile.sha256)) { throw 'A required content profile cannot change during the same user request.' }
+} elseif ($priorProfile) {
+    # Keep the selected profile across retries and follow-ups until an explicit
+    # replacement is selected; a new request key alone is not an opt-out.
+    $requiredContentProfile = [ordered]@{path=[string]$priorProfile.path;sha256=[string]$priorProfile.sha256}
+}
+if ($requiredContentProfile) {
+    if (-not (Test-Path -LiteralPath $requiredContentProfile.path -PathType Leaf) -or (Get-FileHash -LiteralPath $requiredContentProfile.path -Algorithm SHA256).Hash -ine $requiredContentProfile.sha256) { throw 'Required content profile is missing or its hash changed.' }
+    $profileData = Get-Content -LiteralPath $requiredContentProfile.path -Raw -Encoding utf8 | ConvertFrom-Json
+    if ($profileData.schemaVersion -cne 'content-required-profile/v1' -or -not $profileData.sourceHashes -or @($profileData.assertions).Count -eq 0 -or @($profileData.requiredOutputs).Count -eq 0) { throw 'Invalid required content profile schema or empty requirements.' }
+    $selectedHashes = @($allItems | ForEach-Object { ([string]$_.sha256).ToLowerInvariant() })
+    foreach ($sourceHash in $profileData.sourceHashes.PSObject.Properties) {
+        if ([string]$sourceHash.Value -notmatch '^[a-fA-F0-9]{64}$' -or $selectedHashes -notcontains ([string]$sourceHash.Value).ToLowerInvariant()) { throw ('Required content profile source hash is not among selected inputs: ' + $sourceHash.Name) }
+    }
+    $RequireContentValidation = $true
+    if ($deliveryCycle -is [Collections.IDictionary]) { $deliveryCycle['requiredContentProfile'] = $requiredContentProfile }
+    else { $deliveryCycle | Add-Member -NotePropertyName requiredContentProfile -NotePropertyValue $requiredContentProfile -Force }
+}
+# Required content checks are sticky for retries of the same user request.
+if ($RequireContentValidation) {
+    if ($deliveryCycle -is [Collections.IDictionary]) { $deliveryCycle['requireContentValidation'] = $true }
+    else { $deliveryCycle | Add-Member -NotePropertyName requireContentValidation -NotePropertyValue $true -Force }
 }
 $documentScope = $null
 if (-not $RevokeDocumentScope -and -not $newExplicitRequest -and (Test-Path -LiteralPath (Join-Path $resolvedJob 'inputs.json'))) {
@@ -366,6 +421,7 @@ $plan = [ordered]@{
     finalPolishAuthorized = [bool]$FinalPolishAuthorized
     documentScope = $documentScope
     deliveryCycle = $deliveryCycle
+    requiredContentProfile = $requiredContentProfile
     autoHumanRevisions = @($autoHumanRevisions)
     internalJobCreated = $createdJob
     jobPath = $resolvedJob
@@ -381,7 +437,7 @@ $requestData = [ordered]@{
     sources=@($allItems | ForEach-Object { [ordered]@{path=$_.path;role=$_.role;sha256=$_.sha256;userProvided=$_.userProvided} })
     support=@($supportNames);layout=$LayoutReferenceFolder;layoutReason=$LayoutReason
     evidence=@($copyEvidenceResolved);references=@($copyReferenceResolved);collection=[bool]$Collection;polish=[bool]$FinalPolishAuthorized;updateConsole=[bool]$UpdateConsole
-    documentScope=$documentScope;deliveryRequestKey=$deliveryRequestKey
+    documentScope=$documentScope;deliveryRequestKey=$deliveryRequestKey;draftFirst=[bool]$deliveryCycle.draftFirst;requireContentValidation=[bool]$deliveryCycle.requireContentValidation;requiredContentProfile=$requiredContentProfile
 } | ConvertTo-Json -Depth 8 -Compress
 $sha = [Security.Cryptography.SHA256]::Create()
 try { $requestFingerprint = [BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($requestData))).Replace('-','') } finally { $sha.Dispose() }
@@ -400,7 +456,7 @@ $resumeNew = $false
 $reservationPath = Join-Path $metadataRoot 'intake-request.json'
 if ($existingNewFolder -and (Test-Path -LiteralPath $reservationPath -PathType Leaf)) {
     $reservation = Get-Content -Raw -Encoding utf8 -LiteralPath $reservationPath | ConvertFrom-Json
-    $visibleOutputs = @(Get-ChildItem -LiteralPath $workRoot -File -Force | Where-Object { $_.Name -ine [string]$config.consoleFileName })
+    $visibleOutputs = @(Get-ChildItem -LiteralPath $currentRoot -File -Force | Where-Object { $_.Name -ine [string]$config.consoleFileName })
     $registeredOutputs = @($registry.works | Where-Object folderName -eq $WorkFolderName | ForEach-Object { $_.files } | Where-Object { $_ })
     $resumeNew = $reservation.requestFingerprint -eq $requestFingerprint -and $reservation.jobPath -ieq $resolvedJob -and $visibleOutputs.Count -eq 0 -and $registeredOutputs.Count -eq 0
 }
@@ -414,7 +470,7 @@ $inputsPath = Join-Path $resolvedJob 'inputs.json'
 $oldInputs = if (Test-Path -LiteralPath $inputsPath) { Get-Content -Raw -Encoding utf8 -LiteralPath $inputsPath } else { $null }
 
 try {
-    if ($Mode -eq 'New' -and -not $resumeNew) { New-Item -ItemType Directory -Path $workRoot | Out-Null; $newWorkCreated = $true }
+    if ($Mode -eq 'New' -and -not $resumeNew) { New-Item -ItemType Directory -Path $workRoot -Force | Out-Null; $newWorkCreated = $true }
     if ($pendingJobCreation) {
         $jobGoal = if ([string]::IsNullOrWhiteSpace($Goal)) { $TaskTitle } else { $Goal.Trim() }
         $createdPath = (& (Join-Path $PSScriptRoot 'New-HwpxJob.ps1') -Slug $JobSlug -Goal $jobGoal -Date $jobDate -WorkFolder $workRoot | Select-Object -Last 1)
@@ -426,7 +482,7 @@ try {
     $metadataItem = Get-Item -LiteralPath $metadataRoot -Force
     $metadataItem.Attributes = $metadataItem.Attributes -bor [IO.FileAttributes]::Hidden
     if ($Mode -eq 'New') { Write-JsonAtomic $reservationPath ([ordered]@{requestFingerprint=$requestFingerprint;jobPath=$resolvedJob;createdAt=$now}) }
-    foreach ($name in $supportNames) { New-Item -ItemType Directory -Path (Join-Path $workRoot $name) -Force | Out-Null }
+    foreach ($name in $supportNames) { New-Item -ItemType Directory -Path (Join-Path $currentRoot $name) -Force | Out-Null }
     if ($Collection) { New-Item -ItemType Directory -Path (Join-Path (Join-Path $workRoot ([string]$config.defaultCollectionFolderName)) '받은자료') -Force | Out-Null }
 
     $workMetadata = if ($Mode -eq 'FollowUp') {
@@ -542,6 +598,7 @@ try {
     $inputs['incomingReceipt'] = $incomingReceipt
     $inputs['documentScope'] = $documentScope
     $inputs['deliveryCycle'] = $deliveryCycle
+    if ($requiredContentProfile) { $inputs['requiredContentProfile'] = $requiredContentProfile }
     $selectedSources = @($inputs.sources)
     $knownInputPaths = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
     foreach ($source in $selectedSources) { if ($source.path) { [void]$knownInputPaths.Add(([string]$source.path + '|' + $source.role + '|' + $source.sha256)) } }
@@ -575,7 +632,7 @@ try {
         collectionCreated=[bool]$Collection; supportFolders=@($workMetadata.layout.supportFolders); layoutReference=$layoutReferencePath; console=$consoleReceipt
         editingMode=$workMetadata.editing.mode; finalPolishAuthorized=[bool]$FinalPolishAuthorized; autoHumanRevisions=@($autoHumanRevisions)
         sourcePreservation=$preservation; elapsedSeconds=[Math]::Round($intakeWatch.Elapsed.TotalSeconds,3)
-        requestFingerprint=$requestFingerprint;deliveryCycle=$deliveryCycle;purpose=$Purpose;incomingReceipt=$incomingReceipt
+        requestFingerprint=$requestFingerprint;deliveryCycle=$deliveryCycle;purpose=$Purpose;incomingReceipt=$incomingReceipt;requiredContentProfile=$requiredContentProfile
     }
     Write-JsonAtomic (Join-Path $resolvedJob 'wip\receipts\work-intake.json') $receipt
     Write-IntakeResponse $receipt

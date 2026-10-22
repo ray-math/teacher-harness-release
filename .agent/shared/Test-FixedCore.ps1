@@ -16,6 +16,9 @@ $names=@('WorkStorage.ps1','WorkRegistry.ps1','New-HwpxJob.ps1','DocumentScope.p
 foreach($name in $names){Copy-Item -LiteralPath (Join-Path $Workspace ('.agent\shared\'+$name)) -Destination (Join-Path $shared $name)}
 $config=Get-Content -LiteralPath (Join-Path $Workspace '.agent\index\delivery-system.json') -Raw -Encoding utf8 | ConvertFrom-Json
 $config.humanCabinet=$cabinet
+$config | Add-Member outputLayout 'work' -Force
+    $config | Add-Member receiveInputs $true -Force
+    $config.incomingRoot=Join-Path $caseRoot 'incoming'
 $config | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath (Join-Path $index 'delivery-system.json') -Encoding utf8
 function Snapshot([string]$Root){@((Get-ChildItem -LiteralPath $Root -File -Recurse -Force | Sort-Object FullName) | ForEach-Object { $_.FullName.Substring($Root.Length) + '=' + (Get-FileHash -LiteralPath $_.FullName).Hash }) -join '|'}
 function Assert([bool]$Condition,[string]$Message){if(-not $Condition){throw $Message};$script:passed++}
@@ -23,6 +26,8 @@ function ExpectFailure([scriptblock]$Action,[string]$Pattern){$caught=$false;try
 $passed=0
 $before=Snapshot $core
 $source=Join-Path $caseRoot 'source.csv'
+# Create the existing synthetic baseline before intake. Every document-only
+# scope/new-work probe below explicitly selects this same readable form.
 [IO.File]::WriteAllText($source,"key,value`nA,1",[Text.UTF8Encoding]::new($false))
 $start=Join-Path $shared 'Start-HwpxWork.ps1'
 $publishPath=Join-Path $shared 'Publish-HumanResult.ps1'
@@ -39,13 +44,15 @@ function Invoke-ReadyPublication {
 }
 . (Join-Path $shared 'WorkStorage.ps1')
 $publish='Invoke-ReadyPublication'
-ExpectFailure { & $start -Mode New -TaskTitle 'Unclassified work' -JobSlug 'missing-classification' -IntakeSummary 'Fixture' -DecisionReason 'New request' } 'explicit numbered WorkFolderName'
-Assert (@(Get-ChildItem -LiteralPath $cabinet -Force).Count -eq 0) 'Missing classification created a folder'
+$plain=(& $start -Mode New -TaskTitle 'Unclassified work' -JobSlug 'without-classification' -IntakeSummary 'Fixture' -DecisionReason 'New request' -FormFile $source | Out-String) | ConvertFrom-Json
+Assert ($plain.workFolderName -eq 'Unclassified work') 'Unnumbered title must be accepted without a classification question'
+$reusedPlain=(& $start -Mode New -TaskTitle 'Unclassified work' -JobSlug 'without-classification' -IntakeSummary 'Fixture' -DecisionReason 'Same request' -FormFile $source | Out-String) | ConvertFrom-Json
+Assert ($reusedPlain.workRoot -eq $plain.workRoot -and $reusedPlain.jobPath -eq $plain.jobPath) 'Unnumbered work must be reused'
 $intake=(& $start -Mode New -TaskTitle 'Synthetic work' -WorkFolderName '23_Synthetic work' -JobSlug 'first-run' -IntakeSummary 'Fixture' -DecisionReason 'New request' -FormFile $source -UserProvidedFile $source | Out-String) | ConvertFrom-Json
 $job=$intake.jobPath
 $work=$intake.workRoot
 Assert (-not $intake.finalPolishAuthorized) 'Ordinary intake must be content-only'
-$scopeCommon=@{Mode='FollowUp';TaskTitle='Synthetic work';WorkFolderName='23_Synthetic work';JobPath=$job;IntakeSummary='Synthetic scope request';DecisionReason='Scope guard regression'}
+$scopeCommon=@{Mode='FollowUp';TaskTitle='Synthetic work';WorkFolderName='23_Synthetic work';JobPath=$job;IntakeSummary='Synthetic scope request';DecisionReason='Scope guard regression';FormFile=@($source)}
 $metadataScopePath=Join-Path $work '.ai\work.json'
 $scopeBefore=[IO.File]::ReadAllBytes($metadataScopePath)
 ExpectFailure { & $start @scopeCommon -FinalPolishAuthorized } 'exact explicit user request'
@@ -98,7 +105,8 @@ ExpectFailure {Get-WorkJobInfo -Workspace $core -Path (Join-Path $core ('.agent\
 ExpectFailure {Get-WorkCurrentTarget -WorkRoot $work -RelativePath '..\escape.txt'} 'Unsafe current-file'
 . (Join-Path $shared 'WorkRegistry.ps1')
 $registry=Get-WorkRegistry -Workspace $core
-Assert (@($registry.works).Count -eq 1 -and @($registry.works[0].files).Count -eq 2) 'Work-local registry did not reconstruct files'
+$registeredSynthetic = @($registry.works | Where-Object folderName -eq '23_Synthetic work')[0]
+Assert (@($registry.works).Count -eq 2 -and @($registeredSynthetic.files).Count -eq 2) 'Work-local registry did not reconstruct files'
 Assert (-not(Test-Path -LiteralPath (Join-Path $index 'human-current.json'))) 'Global registry was generated'
 Assert ((Get-Command (Join-Path $shared 'New-HwpxJob.ps1')).Parameters.WorkFolder.Attributes.Mandatory -contains $true) 'New job needs explicit work selection'
 $metadataPath=Join-Path $work '.ai\work.json'
@@ -106,15 +114,15 @@ $metadata=Get-Content -LiteralPath $metadataPath -Raw -Encoding utf8 | ConvertFr
 $inputsPath=Join-Path $job 'inputs.json'
 $inputs=Get-Content -LiteralPath $inputsPath -Raw -Encoding utf8 | ConvertFrom-Json
 Assert ($metadata.workId -and $metadata.workId -ceq $inputs.delivery.workId) 'Work and job need the same stable identity'
-Assert ($registry.works[0].workId -ceq $metadata.workId) 'Registry lost stable work identity'
+Assert ($registeredSynthetic.workId -ceq $metadata.workId) 'Registry lost stable work identity'
 $reuse=(& $start -Mode New -TaskTitle 'Synthetic work' -JobSlug 'reuse-existing' -IntakeSummary 'Another request' -DecisionReason 'Same work' | Out-String) | ConvertFrom-Json
 Assert ($reuse.mode -eq 'FollowUp' -and $reuse.workRoot -ieq $work) 'Known work title created a duplicate work instead of reuse'
 Assert ((Get-Content -LiteralPath $metadataPath -Raw -Encoding utf8 | ConvertFrom-Json).workId -ceq $metadata.workId) 'Follow-up changed stable work identity'
-foreach($name in @('11_Test','23-01_Test','23-01-02_Test','20260930_Test')) { Assert (Test-WorkFolderName $name) ('Valid work name rejected: '+$name) }
-foreach($name in @('Test','1_Test','123_Test','23_', '23_ ', '23_Test.', '23_Test\child', '23_Test:stream', "23_bad`nname")) { Assert (-not (Test-WorkFolderName $name)) 'Unsafe or unclassified work name accepted' }
-$inserted=(& $start -Mode New -TaskTitle '23-01_Inserted work' -JobSlug 'inserted-run' -IntakeSummary 'Fixture' -DecisionReason 'Explicit inserted work' | Out-String) | ConvertFrom-Json
+foreach($name in @('Test','1_Test','123_Test','11_Test','23-01_Test','23-01-02_Test','20260930_Test')) { Assert (Test-WorkFolderName $name) ('Valid work name rejected: '+$name) }
+foreach($name in @('.ai','..','CON','nul.txt','LPT1','23_', '23_ ', '23_Test.', '23_Test\child', '23_Test:stream', "23_bad`nname")) { Assert (-not (Test-WorkFolderName $name)) 'Unsafe work name accepted' }
+$inserted=(& $start -Mode New -TaskTitle '23-01_Inserted work' -JobSlug 'inserted-run' -IntakeSummary 'Fixture' -DecisionReason 'Explicit inserted work' -FormFile $source | Out-String) | ConvertFrom-Json
 Assert ($inserted.workFolderName -eq '23-01_Inserted work' -and $inserted.taskTitle -eq 'Inserted work') 'Explicit numbered task title was not used correctly'
-$legacy=(& $start -Mode New -TaskTitle 'Legacy work' -WorkFolderName '20260901_Legacy work' -JobSlug 'legacy-run' -IntakeSummary 'Fixture' -DecisionReason 'Explicit legacy selection' | Out-String) | ConvertFrom-Json
+$legacy=(& $start -Mode New -TaskTitle 'Legacy work' -WorkFolderName '20260901_Legacy work' -JobSlug 'legacy-run' -IntakeSummary 'Fixture' -DecisionReason 'Explicit legacy selection' -FormFile $source | Out-String) | ConvertFrom-Json
 Assert ($legacy.workFolderName -eq '20260901_Legacy work') 'Legacy dated work lost compatibility'
 $numberedMetadata=Join-Path $inserted.workRoot '.ai\work.json'
 $numbered=Get-Content -LiteralPath $numberedMetadata -Raw -Encoding utf8 | ConvertFrom-Json
@@ -135,7 +143,7 @@ try {
     ExpectFailure { Get-WorkJobInfo -Workspace $core -Path $job } 'different human work folder'
 } finally { [IO.File]::WriteAllBytes($inputsPath,$originalInputs) }
 Assert ((Snapshot $core) -ceq $before) 'Numbered and legacy work checks changed the core'
-$report=[ordered]@{ok=$true;passed=$passed;coreUnchanged=((Snapshot $core) -ceq $before);currentFiles=@($registry.works[0].files).Count;revisionFiles=$two.archivedFiles.Count}
+$report=[ordered]@{ok=$true;passed=$passed;coreUnchanged=((Snapshot $core) -ceq $before);currentFiles=@($registeredSynthetic.files).Count;revisionFiles=$two.archivedFiles.Count}
 if ($ReceiptPath) { $report | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $ReceiptPath -Encoding utf8 }
 $report | ConvertTo-Json -Depth 4
 } finally {

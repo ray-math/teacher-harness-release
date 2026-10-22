@@ -41,7 +41,7 @@ async def synthetic():
         root = fixture / 'tools'
         shared = root / '.agent/shared'
         shared.mkdir(parents=True)
-        for name in ('hwpx_mcp_launch.py', 'hwpx_read_client.py', 'work_storage.py'):
+        for name in ('hwpx_mcp_launch.py', 'hwpx_read_client.py', 'work_storage.py', 'Resolve-TeacherHarnessConfig.ps1'):
             shutil.copy2(ROOT / '.agent/shared' / name, shared / name)
         index = root / '.agent/index'
         index.mkdir()

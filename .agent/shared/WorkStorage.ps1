@@ -1,8 +1,8 @@
 ﻿# Shared job-location policy. Read-only: callers decide when to create files.
 function Test-WorkFolderName {
     param([AllowNull()][string]$Name)
-    # Classification is supplied by the user; legacy dated names remain readable.
-    if ([string]::IsNullOrWhiteSpace($Name) -or $Name -notmatch '^(?:\d{8}|\d{2}(?:-\d{2})*)_.+' -or $Name -match '[\x00-\x1f\\/<>:"|?*]' -or $Name.TrimEnd(' ','.') -ne $Name) { return $false }
+    # Names do not require a classification number. Keep path and device guards.
+    if ([string]::IsNullOrWhiteSpace($Name) -or $Name.StartsWith('.') -or $Name -match '[\x00-\x1f\\/<>:"|?*]' -or $Name.Trim(' ','.') -ne $Name -or $Name -match '^(?i:CON|PRN|AUX|NUL|COM[1-9¹²³]|LPT[1-9¹²³])(?:\.|$)') { return $false }
     $title = $Name -replace '^(?:\d{8}|\d{2}(?:-\d{2})*)_', ''
     return -not [string]::IsNullOrWhiteSpace($title)
 }
@@ -39,7 +39,9 @@ function Get-WorkJobInfo {
         . $pathResolver
         $config = Resolve-TeacherHarnessConfig -Workspace $Workspace -Config $config
     } elseif (-not [IO.Path]::IsPathRooted([string]$config.humanCabinet)) { throw 'Relative delivery paths require Resolve-TeacherHarnessConfig.ps1.' }
-    $cabinet = [IO.Path]::GetFullPath([string]$config.humanCabinet).TrimEnd('\')
+    $cabinet = Get-WorkContainerRoot $config
+    $legacyCabinet = [IO.Path]::GetFullPath([string]$config.humanCabinet).TrimEnd('\')
+    if ($config.outputLayout -eq 'flat' -and -not $full.StartsWith($cabinet + '\', [StringComparison]::OrdinalIgnoreCase)) { $cabinet = $legacyCabinet }
     if (-not $full.StartsWith($cabinet + '\', [StringComparison]::OrdinalIgnoreCase)) { throw "Job path is outside the selected work storage: $full" }
     $parts = @($full.Substring($cabinet.Length + 1) -split '[\\/]')
     $metadataName = if ($config.metadataFolderName) { [string]$config.metadataFolderName } else { '.ai' }
@@ -66,6 +68,7 @@ function Get-WorkJobInfo {
 
 function Get-WorkCurrentTarget {
     param([Parameter(Mandatory=$true)][string]$WorkRoot,[Parameter(Mandatory=$true)][string]$RelativePath,[string[]]$ReservedNames=@('.ai','previous_versions'))
+    $WorkRoot = Get-WorkCurrentRoot $WorkRoot
     if ($RelativePath -match '[\x00-\x1f]') { throw "Unsafe current-file relative path: control character" }
     $parts = @($RelativePath -split '[\\/]')
     if ([IO.Path]::IsPathRooted($RelativePath) -or @($parts | Where-Object { $_ -eq '' -or $_ -eq '.' -or $_ -eq '..' -or $_.StartsWith('.') -or $_ -match '[\x00-\x1f<>:"|?*]' -or $_ -match '^(?i:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\.|$)' -or $_.TrimEnd(' ','.') -ne $_ }).Count -gt 0 -or $parts[0] -in $ReservedNames) { throw "Unsafe current-file relative path: $RelativePath" }
@@ -78,4 +81,51 @@ function Get-WorkCurrentTarget {
     }
     if (-not $target.StartsWith([IO.Path]::GetFullPath($WorkRoot).TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase)) { throw 'Current-file target escaped its work folder.' }
     $target
+}
+function Get-WorkContainerRoot {
+    param($Config)
+    $root = [IO.Path]::GetFullPath([string]$Config.humanCabinet).TrimEnd('\')
+    if ($Config.outputLayout -eq 'flat') { return Join-Path $root '.ai\works' }
+    $root
+}
+
+function Get-WorkCurrentRoot {
+    param([string]$WorkRoot)
+    # Internal work identities remain separate while their current files share Output.
+    $root = [IO.Path]::GetFullPath($WorkRoot).TrimEnd('\')
+    $parent = [IO.Path]::GetDirectoryName($root)
+    if ([IO.Path]::GetFileName($parent) -eq 'works' -and [IO.Path]::GetFileName([IO.Path]::GetDirectoryName($parent)) -eq '.ai') {
+        return [IO.Path]::GetDirectoryName([IO.Path]::GetDirectoryName($parent))
+    }
+    $root
+}
+
+function Resolve-WorkDeliveryName {
+    param([string]$WorkRoot,[string]$RelativePath)
+    $output = Get-WorkCurrentRoot $WorkRoot
+    if ($output -ieq [IO.Path]::GetFullPath($WorkRoot).TrimEnd('\')) { return $RelativePath }
+    if ([IO.Path]::GetFileName($RelativePath) -cne $RelativePath -or -not (Test-WorkFolderName $RelativePath)) { throw "Flat output requires a safe filename without subfolders: $RelativePath" }
+    $metadata = Assert-WorkStoragePath (Join-Path $output '.ai')
+    New-Item -ItemType Directory -Path $metadata -Force | Out-Null
+    [IO.File]::SetAttributes($metadata,([IO.File]::GetAttributes($metadata) -bor [IO.FileAttributes]::Hidden))
+    $lock = [IO.File]::Open((Assert-WorkStoragePath (Join-Path $metadata 'output-names.lock')),'OpenOrCreate','ReadWrite','None')
+    try {
+        $mapPath = Assert-WorkStoragePath (Join-Path $metadata 'output-names.json')
+        $records = @()
+        if (Test-Path -LiteralPath $mapPath) { $records = @((Get-Content -Raw -Encoding utf8 -LiteralPath $mapPath | ConvertFrom-Json) | ForEach-Object { $_ }) }
+        $owned = @($records | Where-Object { $_.workRoot -ieq $WorkRoot -and ($_.requested -ieq $RelativePath -or $_.name -ieq $RelativePath) })
+        if ($owned.Count -gt 1) { throw 'Duplicate flat output ownership records.' }
+        if ($owned.Count -eq 1) { return [string]$owned[0].name }
+        $title = $RelativePath -replace '^\d+_', ''
+        if (-not (Test-WorkFolderName $title)) { throw 'Flat output title is empty or unsafe.' }
+        $used = @($records | ForEach-Object name) + @(Get-ChildItem -LiteralPath $output -Force | ForEach-Object Name)
+        $index = 0
+        while (@($used | Where-Object { $_ -match ('^' + ('{0:D2}' -f $index) + '_') }).Count -gt 0) { $index++ }
+        $name = ('{0:D2}_{1}' -f $index,$title)
+        $records += [pscustomobject]@{workRoot=$WorkRoot;requested=$RelativePath;name=$name}
+        $temp = Join-Path $metadata ('names-' + [guid]::NewGuid().ToString('N') + '.tmp')
+        try { ConvertTo-Json -InputObject @($records) -Depth 5 | Set-Content -LiteralPath $temp -Encoding utf8; Move-Item -LiteralPath $temp -Destination $mapPath -Force }
+        finally { if (Test-Path -LiteralPath $temp) { Remove-Item -LiteralPath $temp -Force } }
+        $name
+    } finally { $lock.Dispose() }
 }

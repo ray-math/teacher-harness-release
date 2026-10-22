@@ -10,8 +10,11 @@ function Get-WorkRegistry {
         . $pathResolver
         $config = Resolve-TeacherHarnessConfig -Workspace $Workspace -Config $config
     } elseif (-not [IO.Path]::IsPathRooted([string]$config.humanCabinet)) { throw 'Relative delivery paths require Resolve-TeacherHarnessConfig.ps1.' }
-    $cabinet = Assert-WorkStoragePath ([string]$config.humanCabinet)
+    $cabinet = Assert-WorkStoragePath (Get-WorkContainerRoot $config)
+    $containers = @($cabinet)
+    if ($config.outputLayout -eq 'flat') { $containers += [IO.Path]::GetFullPath([string]$config.humanCabinet) }
     $entries = @(
+      foreach ($cabinet in $containers) {
         if (Test-Path -LiteralPath $cabinet -PathType Container) {
             foreach ($folder in @(Get-ChildItem -LiteralPath $cabinet -Directory -Force | Where-Object { (Test-WorkFolderName $_.Name) -and -not ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) })) {
                 $metadataPath = Assert-WorkStoragePath (Join-Path (Join-Path $folder.FullName ([string]$config.metadataFolderName)) ([string]$config.workMetadataName))
@@ -28,6 +31,7 @@ function Get-WorkRegistry {
                 # The local work timestamp can encode the same instant differently.
                 if (-not $entry.Contains('firstIntakeAt') -and $metadata.PSObject.Properties.Name -contains 'firstIntakeAt') { $entry['firstIntakeAt']=$metadata.firstIntakeAt }
                 $entry['folderName']=$folder.Name
+                $entry['workRoot']=$folder.FullName
                 if (-not $entry['createdDate'] -and $folder.Name -match '^\d{8}_') { $entry['createdDate']=$folder.Name.Substring(0,8) }
                 $entry['files']=@($metadata.currentFiles | Where-Object { $_ })
                 $entry['metadataFolder']=[string]$config.metadataFolderName
@@ -38,6 +42,7 @@ function Get-WorkRegistry {
                 [pscustomobject]$entry
             }
         }
+      }
     )
     [pscustomobject]@{schemaVersion='hwpx-human-current/work-local-v1';works=@($entries)}
 }

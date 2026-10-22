@@ -158,7 +158,9 @@ if ($currentEntry.Count -eq 0) { throw 'No intake record exists for this work. R
 $WorkFolderName = [string]$currentEntry[0].folderName
 $CreatedDate = [string]$currentEntry[0].createdDate
 
-$workRoot = [IO.Path]::GetFullPath((Join-Path $cabinet $WorkFolderName))
+$workRoot = [IO.Path]::GetFullPath((Join-Path (Get-WorkContainerRoot $config) $WorkFolderName))
+if ($currentEntry[0].workRoot) { $workRoot = [string]$currentEntry[0].workRoot }
+$currentRoot = Get-WorkCurrentRoot $workRoot
 $cabinetPrefix = $cabinet.TrimEnd('\') + '\'
 if (-not $workRoot.StartsWith($cabinetPrefix,[StringComparison]::OrdinalIgnoreCase)) { throw "Work target escaped the human cabinet: $workRoot" }
 if (-not (Test-WorkFolderName $WorkFolderName)) { throw "Invalid work-folder name: $WorkFolderName" }
@@ -197,8 +199,9 @@ $plans = foreach ($item in $SourceFile) {
         $name = $carryName
         if ($name -notin @($currentEntry[0].files)) { throw "Carry source must match a registered current relative path: $name" }
     }
+    $name = Resolve-WorkDeliveryName -WorkRoot $workRoot -RelativePath $name
     $registeredSamePath = Get-WorkCurrentTarget -WorkRoot $workRoot -RelativePath $name -ReservedNames @([string]$config.metadataFolderName,[string]$config.archiveFolderName)
-    $name = Get-RelativePathCompat $workRoot $registeredSamePath
+    $name = Get-RelativePathCompat $currentRoot $registeredSamePath
     if ([IO.Path]::GetExtension($name) -ine $extension) { throw 'TargetRelativePath must preserve the source extension.' }
     $unchangedCurrent = $name -in @($currentEntry[0].files) -and
         (Test-Path -LiteralPath $registeredSamePath -PathType Leaf) -and
@@ -226,12 +229,12 @@ $unchangedNames = @($plans | Where-Object unchangedCurrent | ForEach-Object name
 $affectedPriorNames = @($priorNames | Where-Object { $_ -notin $retainedNames -and $_ -notin $unchangedNames })
 $resultNames = @($plans | ForEach-Object name) + @($retainedNames)
 $actualRootNames = @(
-    Get-ChildItem -LiteralPath $workRoot -File -Force |
+    Get-ChildItem -LiteralPath $currentRoot -File -Force |
         Where-Object { $_.Name -ne [string]$config.consoleFileName } |
         ForEach-Object Name
 )
 $registeredRevisionNames = @($prePublishWorkMetadata.revisionHistory | ForEach-Object relativePath)
-$unexpectedRootNames = @($actualRootNames | Where-Object { $priorNames -notcontains $_ -and $registeredRevisionNames -notcontains $_ })
+$unexpectedRootNames = @( $(if ($currentRoot -ine $workRoot) { @() } else { $actualRootNames }) | Where-Object { $priorNames -notcontains $_ -and $registeredRevisionNames -notcontains $_ })
 $missingRegisteredNames = @(
     foreach ($name in $priorNames) {
         # Registered current files can live in a visible support folder. Validate
@@ -240,9 +243,9 @@ $missingRegisteredNames = @(
         if ([IO.Path]::IsPathRooted($name) -or @($parts | Where-Object { $_ -eq '' -or $_ -eq '.' -or $_ -eq '..' -or $_.StartsWith('.') -or $_.Contains(':') }).Count -gt 0) {
             throw "Unsafe registered current-file path: $name"
         }
-        $registeredPath = [IO.Path]::GetFullPath((Join-Path $workRoot $name))
-        if (-not $registeredPath.StartsWith(($workRoot.TrimEnd('\') + '\'), [StringComparison]::OrdinalIgnoreCase)) { throw "Registered file escaped the work folder: $name" }
-        $walkPath = $workRoot
+        $registeredPath = [IO.Path]::GetFullPath((Join-Path $currentRoot $name))
+        if (-not $registeredPath.StartsWith(($currentRoot.TrimEnd('\') + '\'), [StringComparison]::OrdinalIgnoreCase)) { throw "Registered file escaped the work folder: $name" }
+        $walkPath = $currentRoot
         foreach ($part in @('') + $parts) {
             if ($part) { $walkPath = Join-Path $walkPath $part }
             if (Test-Path -LiteralPath $walkPath) {
@@ -324,7 +327,7 @@ if ($hanwordPlans.Count -gt 0) {
 }
 $humanBaseChecks = [Collections.Generic.List[object]]::new()
 foreach ($name in $affectedPriorNames) {
-    $priorPath = Join-Path $workRoot $name
+    $priorPath = Join-Path $currentRoot $name
     if (-not (Test-Path -LiteralPath $priorPath -PathType Leaf)) { continue }
     $currentHash = (Get-PublishFileHash -LiteralPath $priorPath -Algorithm SHA256).Hash
     $samePublishedSource = @($plans | Where-Object { $_.name -ieq $name -and (Get-PublishFileHash -LiteralPath $_.source -Algorithm SHA256).Hash -eq $currentHash }).Count -gt 0
@@ -344,7 +347,7 @@ foreach ($name in $affectedPriorNames) {
 
 $payload = [ordered]@{
     schemaVersion='hwpx-human-delivery.publish/v6'; stage=$Stage; taskTitle=$safeTitle; createdDate=$CreatedDate
-    workFolderName=$WorkFolderName; currentRoot=$workRoot; archiveRoot=$archiveRoot; priorState=$priorState
+    workFolderName=$WorkFolderName; currentRoot=$currentRoot; archiveRoot=$archiveRoot; priorState=$priorState
     priorFiles=@($priorNames); files=@($plans); retainedFiles=@($retainedNames); partialUpdate=[bool]$PartialUpdate; console=$(if($UpdateConsole){Join-Path $workRoot ([string]$config.consoleFileName)}else{$null})
     humanRevisionChecks=@($humanBaseChecks); editingMode=$prePublishWorkMetadata.editing.mode; formGate=$formGate
     sourcePreservation=$sourcePreservation
@@ -379,7 +382,7 @@ if ($sameCurrentSet -and $publishedCycle.Count -gt 0 -and $priorState -eq $Stage
 }
 
 foreach ($name in $affectedPriorNames) {
-    $priorPath = Join-Path $workRoot $name
+    $priorPath = Join-Path $currentRoot $name
     if (Test-Path -LiteralPath $priorPath -PathType Leaf) {
         try { $stream=[IO.File]::Open($priorPath,[IO.FileMode]::Open,[IO.FileAccess]::ReadWrite,[IO.FileShare]::None); $stream.Dispose() }
         catch { throw "Close the current file in its application before publishing a replacement: $priorPath" }
@@ -401,11 +404,11 @@ try {
         if ((Get-PublishFileHash -LiteralPath $stageTarget).Hash -ine $plan.completedSha256) { throw 'WIP source changed while staging completed publication.' }
     }
 
-    $existingPrior = @($affectedPriorNames | Where-Object { Test-Path -LiteralPath (Join-Path $workRoot $_) -PathType Leaf })
+    $existingPrior = @($affectedPriorNames | Where-Object { Test-Path -LiteralPath (Join-Path $currentRoot $_) -PathType Leaf })
     if ($existingPrior.Count -gt 0 -and -not $sameCurrentSet) {
         $archivedSnapshot = Join-Path $metadataRoot 'revisions'
         foreach ($name in $existingPrior) {
-            $priorPath = Join-Path $workRoot $name
+            $priorPath = Join-Path $currentRoot $name
             if ($PSCmdlet.ShouldProcess($priorPath,"Preserve previous current file in $archivedSnapshot")) {
                 $mapping = Save-HumanRevisionObject -WorkRoot $workRoot -MetadataRoot $metadataRoot -CurrentPath $priorPath -RevisionOf $name
                 $archiveMappings.Add($mapping)
@@ -437,7 +440,7 @@ try {
     $workMetadata['currentFiles'] = @($resultNames)
     $workMetadata['revisionHistory'] = @($workMetadata.revisionHistory | Where-Object { $_ }) + @($archiveMappings | ForEach-Object { [ordered]@{relativePath=$_.relativePath;revisionOf=$_.revisionOf;sha256=$_.sha256;archivedAt=$now;storage=$_.storage} })
     $currentFileRecords = @($plans | ForEach-Object {
-        $publishedPath = Join-Path $workRoot $_.name
+        $publishedPath = Join-Path $currentRoot $_.name
         [ordered]@{ name=$_.name; path=$publishedPath; sha256=(Get-PublishFileHash -LiteralPath $publishedPath -Algorithm SHA256).Hash; recordedAt=$now }
     })
     # Retain historical hash timestamps; do not claim locked, untouched files were reverified.

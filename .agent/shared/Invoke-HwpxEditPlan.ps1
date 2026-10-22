@@ -3,6 +3,7 @@ param(
     [Parameter(Mandatory=$true)][string]$JobPath,
     [Parameter(Mandatory=$true)][string]$PlanPath,
     [Parameter(Mandatory=$true)][ValidatePattern('^[A-Fa-f0-9]{64}$')][string]$SourceSha256,
+    [string]$ParagraphTargetsPath,
     [ValidateRange(5,3600)][int]$TimeoutSeconds = 120,
     [switch]$DryRun,
     [switch]$Status
@@ -12,6 +13,7 @@ $runner = Join-Path $PSScriptRoot 'run_hwpx_edit_plan.py'
 $arguments = @($runner,'--job',([IO.Path]::GetFullPath($JobPath)),'--plan',([IO.Path]::GetFullPath($PlanPath)),'--source-sha256',$SourceSha256,'--timeout',"$TimeoutSeconds")
 if ($DryRun) { $arguments += '--dry-run' }
 if ($Status) { $arguments += '--status' }
+if ($ParagraphTargetsPath) { $arguments += @('--paragraph-targets',([IO.Path]::GetFullPath($ParagraphTargetsPath))) }
 $runtime = & (Join-Path $PSScriptRoot 'Get-HwpxRuntime.ps1')
 $env:PYTHONUTF8 = '1'
 & $runtime.Python @arguments
