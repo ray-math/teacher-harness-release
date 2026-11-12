@@ -29,8 +29,8 @@ def read_contract(path):
 
 
 def runtime():
-    if version("python-hwpx") != "6.3.0" or version("python-hwpx-automation") != "7.0.4":
-        raise ValueError("Unsupported paragraph preflight runtime; expected python-hwpx 6.3.0 / automation 7.0.4.")
+    if version("python-hwpx") != "6.12.0" or version("python-hwpx-automation") != "7.5.0":
+        raise ValueError("Unsupported paragraph preflight runtime; expected python-hwpx 6.12.0 / automation 7.5.0.")
     from hwpx import patch, body_patch
     for owner, name in ((patch, "_paragraph_spans"), (patch, "_text_edit_for_paragraph"),
                         (body_patch, "direct_paragraph_spans"), (body_patch, "_TBL_RE")):
