@@ -38,14 +38,15 @@ foreach ($name in $destinationNames) {
     }
     $checks.Add([pscustomobject]@{kind=$name;path=$target;existingAncestor=$parent;ok=$true;writeProbe=$writeStatus})
 }
-$runtimeConfig = Get-Content -LiteralPath (Join-Path $workspace '.agent/index/hwpx-runtime.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+$runtimeConfigPath = Join-Path $workspace '.agent/index/hwpx-runtime.json'
+$runtimeConfig = Get-Content -LiteralPath $runtimeConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json
 $runtime = [string]$runtimeConfig.runtimeDirectory
 if (-not [IO.Path]::IsPathRooted($runtime)) { $runtime = Join-Path $workspace $runtime }
 $python = Join-Path $runtime 'Scripts/python.exe'
 $runtimeOk = Test-Path -LiteralPath $python -PathType Leaf
 $versions = $null
 if ($runtimeOk) {
-    $response = @(& $python -B -c "import json; from importlib.metadata import version; print(json.dumps({n:version(n) for n in ['python-hwpx','python-hwpx-automation']}))")
+    $response = @(& $python -B -c "import json,sys; from importlib.metadata import version; spec=json.load(open(sys.argv[1], encoding='utf-8-sig')); print(json.dumps({n:version(n) for n in spec['versions']}))" $runtimeConfigPath)
     if ($LASTEXITCODE -ne 0) { $runtimeOk = $false } else {
         $versions = ($response -join '') | ConvertFrom-Json
         foreach ($property in $runtimeConfig.versions.PSObject.Properties) {

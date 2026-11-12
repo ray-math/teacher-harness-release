@@ -122,7 +122,7 @@ def worker(args, plan, run):
     # Pin the small observation adapter to the installed API version. Wrappers
     # measure calls and persist progress; all validation/operation code is upstream.
     from importlib.metadata import version
-    if version('python-hwpx') != '6.3.0' or version('python-hwpx-automation') != '7.0.4':
+    if version('python-hwpx') != '6.12.0' or version('python-hwpx-automation') != '7.5.0':
         raise RuntimeError('Runtime version differs from the tested adapter.')
     from hwpx.plan import _execute as engine
     from hwpx_automation.hwpx_ops import HwpxOps

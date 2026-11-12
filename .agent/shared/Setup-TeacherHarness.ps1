@@ -102,7 +102,7 @@ if ($InstallRuntime -or $InstallOdt) {
 }
 
 if ($InstallRuntime) {
-    if ($spec.versions.'python-hwpx' -ne '6.3.0' -or $spec.versions.'python-hwpx-automation' -ne '7.0.4' -or $spec.skillVersion -ne '2.1.0') {
+    if ($spec.versions.'python-hwpx' -ne '6.12.0' -or $spec.versions.'python-hwpx-automation' -ne '7.5.0' -or $spec.versions.mcp -ne '1.30.0' -or $spec.skillVersion -ne '2.1.0') {
         throw 'Unexpected HWPX runtime specification. Review the pinned specification before installation.'
     }
     $requirements = Join-Path $shared 'hwpx-runtime/requirements-verified.txt'

@@ -1,0 +1,93 @@
+name: Python runtime
+
+on:
+  pull_request:
+    paths:
+      - '.agent/shared/**'
+      - '.agent/index/hwpx-runtime.json'
+      - '.agent/index/odt-runtime.json'
+      - '.github/workflows/python-runtime.yml'
+      - 'Install.ps1'
+  push:
+    branches: [main]
+    paths:
+      - '.agent/shared/**'
+      - '.agent/index/hwpx-runtime.json'
+      - '.agent/index/odt-runtime.json'
+      - '.github/workflows/python-runtime.yml'
+      - 'Install.ps1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-runtime:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: powershell
+    env:
+      PYTHONUTF8: '1'
+      PYTHONDONTWRITEBYTECODE: '1'
+      HWPX_SKILL_VERSION: '2.1.0'
+      HWPX_STACK_AUTO_UPDATE: '0'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+          architecture: x64
+
+      - name: Install the pinned Windows runtime
+        run: |
+          $spec = Get-Content -Raw -Encoding UTF8 .agent/index/hwpx-runtime.json | ConvertFrom-Json
+          $runtime = Join-Path $env:GITHUB_WORKSPACE $spec.runtimeDirectory
+          python -m venv $runtime
+          if ($LASTEXITCODE -ne 0) { throw 'Runtime creation failed.' }
+          $runtimePython = Join-Path $runtime 'Scripts/python.exe'
+          & $runtimePython -m pip install --disable-pip-version-check -r .agent/shared/hwpx-runtime/requirements-verified.txt
+          if ($LASTEXITCODE -ne 0) { throw 'Pinned runtime installation failed.' }
+          & $runtimePython -m pip check
+          if ($LASTEXITCODE -ne 0) { throw 'Pinned runtime dependencies conflict.' }
+          "HWPX_TEST_PYTHON=$runtimePython" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Check the production PowerShell launcher
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .agent/shared/Start-HwpxMcpWindows.ps1 -CheckOnly
+
+      - name: Check document work readiness without input files or writes
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .agent/shared/Test-DocumentWorkReadiness.ps1
+
+      - name: Check real MCP reads and edits in TEMP
+        run: '& $env:HWPX_TEST_PYTHON -B .agent/shared/test_hwpx_runtime_compatibility.py -v'
+
+      - name: Check document preservation and Windows edit worker
+        run: |
+          & $env:HWPX_TEST_PYTHON -B .agent/shared/check_hwpx_document.py
+          if ($LASTEXITCODE -ne 0) { throw 'Document smoke check failed.' }
+          foreach ($script in @(
+            '.agent/shared/test_paragraph_target_preflight.py',
+            '.agent/shared/test_inspect_hwpx_draft.py',
+            '.agent/shared/hancom-native/test_verify_package.py'
+          )) {
+            & $env:HWPX_TEST_PYTHON -B $script -v
+            if ($LASTEXITCODE -ne 0) { throw "Regression failed: $script" }
+          }
+
+      - name: Check dynamic roots through the production MCP launcher
+        run: '& $env:HWPX_TEST_PYTHON -B .agent/shared/test_hwpx_dynamic_launch.py'
+
+      - name: Check ODT with isolated pinned dependencies
+        run: |
+          $odtDeps = Join-Path $env:RUNNER_TEMP ('teacher-odt-deps-' + [Guid]::NewGuid().ToString('N'))
+          try {
+            & $env:HWPX_TEST_PYTHON -m pip install --disable-pip-version-check --target $odtDeps -r .agent/shared/official-odt-draft/scripts/requirements.txt
+            if ($LASTEXITCODE -ne 0) { throw 'ODT dependency installation failed.' }
+            & $env:HWPX_TEST_PYTHON -B .agent/shared/official-odt-draft/scripts/run_odt.py --deps $odtDeps --self-test
+            if ($LASTEXITCODE -ne 0) { throw 'ODT self-test failed.' }
+          } finally {
+            if (Test-Path -LiteralPath $odtDeps) { Remove-Item -LiteralPath $odtDeps -Recurse -Force }
+          }
